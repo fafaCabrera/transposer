@@ -21,12 +21,15 @@
 const state = {
   rawText:      "",           // current source text
   songName:     "",           // filename without extension (for export)
+  filePath:     "",           // full path of currently loaded file (if known)
+  fileExt:      "",           // extension of loaded file e.g. ".md"
   semitones:    0,            // transposition -11…+11
   notation:     "american",   // "american" | "latin"
   accidental:   "sharp",      // "sharp" | "flat"
   chordColor:   "#f9c74f",    // chord highlight CSS colour
   zoom:         100,          // output font-size %
   lastLines:    [],           // most recent tokenised lines from Python
+  isEditing:    false,        // edit mode active?
   debounceTimer: null,
   initDone:     false,
 };
@@ -39,6 +42,7 @@ const els = {
   // Header
   headerFilename:   $("headerFilename"),
   clearBtn:         $("clearBtn"),
+  editBtn:          $("editBtn"),
   exportBtn:        $("exportBtn"),
   copyBtn:          $("copyBtn"),
 
@@ -78,6 +82,10 @@ const els = {
   // Output
   outputContent:    $("outputContent"),
   outputPlaceholder: $("outputPlaceholder"),
+  editBar:          $("editBar"),
+  editTextarea:     $("editTextarea"),
+  saveEditBtn:      $("saveEditBtn"),
+  cancelEditBtn:    $("cancelEditBtn"),
 
   // Loading overlay
   loadingOverlay:   $("loadingOverlay"),
@@ -204,7 +212,12 @@ function handleFileResult(result, nameHint) {
     showToast("error", result?.error || "Unknown error.");
     return;
   }
-  loadText(result.text, nameHint || result.filename || "");
+  loadText(
+    result.text,
+    nameHint || result.filename || "",
+    result.path  || "",
+    result.ext   || "",
+  );
   showToast("success", "File loaded.");
 }
 
@@ -266,11 +279,14 @@ function bindPastePanel() {
 
 // ── Load text → state ─────────────────────────────────────────────────────────
 
-function loadText(text, name) {
+function loadText(text, name, path, ext) {
   state.rawText             = text;
   state.songName            = name || "";
+  state.filePath            = path || "";
+  state.fileExt             = ext  || "";
   els.inputText.value       = text;
   els.headerFilename.textContent = name || "";
+  exitEditMode();
   scheduleTranspose();
 }
 
@@ -278,16 +294,108 @@ function loadText(text, name) {
 
 function bindHeaderButtons() {
   els.clearBtn.addEventListener("click", () => {
-    state.rawText = "";
+    state.rawText  = "";
     state.songName = "";
+    state.filePath = "";
+    state.fileExt  = "";
     state.lastLines = [];
     els.inputText.value = "";
     els.headerFilename.textContent = "";
+    exitEditMode();
     renderEmpty();
   });
 
+  els.editBtn.addEventListener("click", () => {
+    state.isEditing ? exitEditMode() : enterEditMode();
+  });
+
+  els.saveEditBtn.addEventListener("click",   saveEdit);
+  els.cancelEditBtn.addEventListener("click", exitEditMode);
+
   els.copyBtn.addEventListener("click", copyOutput);
   els.exportBtn.addEventListener("click", exportMarkdown);
+}
+
+// ── Edit mode ─────────────────────────────────────────────────────────────────
+
+function enterEditMode() {
+  if (!state.lastLines.length && !state.rawText.trim()) {
+    showToast("error", "Nothing to edit."); return;
+  }
+  state.isEditing = true;
+
+  // Populate textarea with current plain text output
+  const plain = els.outputContent.textContent || state.rawText;
+  els.editTextarea.value = plain;
+
+  // Swap views
+  els.outputContent.style.display  = "none";
+  els.editTextarea.style.display   = "block";
+  els.editBar.style.display        = "flex";
+  $("outputScroll").classList.add("editing");
+
+  // Update edit button label
+  els.editBtn.textContent = "👁 View";
+  els.editBtn.title       = "Switch back to view mode";
+
+  // Update save button label based on whether we know the file path
+  els.saveEditBtn.textContent = state.filePath ? "💾 Save" : "💾 Save As…";
+
+  els.editTextarea.focus();
+}
+
+function exitEditMode() {
+  if (!state.isEditing) return;
+  state.isEditing = false;
+
+  els.editTextarea.style.display  = "none";
+  els.editBar.style.display       = "none";
+  els.outputContent.style.display = state.lastLines.length ? "block" : "none";
+  $("outputScroll").classList.remove("editing");
+
+  els.editBtn.textContent = "✏ Edit";
+  els.editBtn.title       = "Edit output";
+}
+
+async function saveEdit() {
+  const content = els.editTextarea.value;
+  if (!content.trim()) { showToast("error", "Nothing to save."); return; }
+
+  showLoading("Saving…");
+  try {
+    let result;
+
+    if (state.filePath) {
+      // Overwrite the known file directly
+      result = await window.pywebview.api.save_file(state.filePath, content);
+      if (result.ok) {
+        showToast("success", `Saved: ${state.filePath.split(/[/\\]/).pop()}`);
+        exitEditMode();
+      } else {
+        showToast("error", result.error || "Save failed.");
+      }
+    } else {
+      // No known path — open Save As dialog
+      const suggested = state.songName ? `${state.songName}.md` : "song.md";
+      result = await window.pywebview.api.save_file_dialog(content, suggested);
+      if (!result.ok) {
+        showToast("error", result.error || "Save failed."); return;
+      }
+      if (result.saved) {
+        state.filePath = result.path;
+        state.fileExt  = ".md";
+        showToast("success", `Saved: ${result.path.split(/[/\\]/).pop()}`);
+        exitEditMode();
+      } else {
+        showToast("info", "Save cancelled.");
+      }
+    }
+  } catch (err) {
+    showToast("error", "Save error.");
+    console.error(err);
+  } finally {
+    hideLoading();
+  }
 }
 
 function copyOutput() {
@@ -541,11 +649,15 @@ function renderOutput(lines) {
   if (els.fontSelect.value) {
     els.outputContent.style.fontFamily = els.fontSelect.value;
   }
+
+  // Show Edit button now that there's output
+  els.editBtn.style.display = "inline-flex";
 }
 
 function renderEmpty() {
   els.outputContent.style.display      = "none";
   els.outputPlaceholder.style.display  = "flex";
+  els.editBtn.style.display            = "none";
   state.lastLines = [];
 }
 

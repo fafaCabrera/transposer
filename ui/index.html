@@ -20,6 +20,7 @@
     <span id="headerFilename" class="header__filename"></span>
     <span class="header__spacer"></span>
     <button class="btn btn--ghost btn--sm" id="clearBtn"  title="Clear all">✕ Clear</button>
+    <button class="btn btn--ghost btn--sm" id="editBtn"   title="Edit output" style="display:none">✏ Edit</button>
     <button class="btn btn--ghost btn--sm" id="exportBtn" title="Export as Markdown">⬇ Export .md</button>
     <button class="btn btn--ghost btn--sm" id="copyBtn"   title="Copy output (Ctrl+Shift+C)">📋 Copy</button>
   </header>
@@ -217,6 +218,17 @@
 
   <!-- ════════════════════════════════ MAIN ════════════════════════════════ -->
   <main class="main">
+
+    <!-- Edit mode toolbar (hidden until editing) -->
+    <div class="edit-bar" id="editBar" style="display:none">
+      <span class="edit-bar__label">✏ Edit mode</span>
+      <span class="edit-bar__hint">Changes are not transposed — editing the raw text</span>
+      <div class="edit-bar__actions">
+        <button class="btn btn--primary btn--sm" id="saveEditBtn">💾 Save</button>
+        <button class="btn btn--ghost btn--sm"   id="cancelEditBtn">✕ Cancel</button>
+      </div>
+    </div>
+
     <div class="output-scroll" id="outputScroll">
 
       <div class="output-placeholder" id="outputPlaceholder">
@@ -227,8 +239,15 @@
         </span>
       </div>
 
+      <!-- View mode: rendered transposed output -->
       <div class="output-content" id="outputContent" style="display:none"
            aria-live="polite" aria-label="Transposed lyrics"></div>
+
+      <!-- Edit mode: plain textarea -->
+      <textarea class="edit-textarea" id="editTextarea"
+                style="display:none"
+                spellcheck="false" autocorrect="off" autocapitalize="off"
+                aria-label="Edit output"></textarea>
 
     </div>
   </main>

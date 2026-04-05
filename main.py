@@ -52,7 +52,9 @@ class Api:
         path   = sys.argv[1]
         result = handle_file_path(path)
         if result.get("ok"):
-            result["filename"] = os.path.basename(path)
+            result["filename"] = os.path.splitext(os.path.basename(path))[0]
+            result["path"]     = path
+            result["ext"]      = os.path.splitext(path)[1].lower()
         return result
 
     # ── File handling ────────────────────────────────────────────────────────
@@ -64,25 +66,27 @@ class Api:
     def open_file_dialog(self) -> dict:
         """Open a native OS file-picker and return extracted text."""
         file_types = (
-            "Supported files (*.txt;*.pdf;*.docx;*.rtf;*.lnk)",
-            "Text files (*.txt)",
+            "Supported files (*.txt;*.md;*.pdf;*.docx;*.rtf;*.lnk)",
+            "Text / Markdown (*.txt;*.md)",
             "PDF files (*.pdf)",
             "Word documents (*.docx)",
             "Rich Text Format (*.rtf)",
             "Windows Shortcuts (*.lnk)",
             "All files (*.*)",
         )
-        result = webview.windows[0].create_file_dialog(
+        picked = webview.windows[0].create_file_dialog(
             webview.OPEN_DIALOG,
             allow_multiple=False,
             file_types=file_types,
         )
-        if not result:
+        if not picked:
             return {"ok": False, "error": "No file selected."}
-        path   = result[0]
+        path   = picked[0]
         result = handle_file_path(path)
         if result.get("ok"):
             result["filename"] = os.path.splitext(os.path.basename(path))[0]
+            result["path"]     = path
+            result["ext"]      = os.path.splitext(path)[1].lower()
         return result
 
     # ── URL loading ──────────────────────────────────────────────────────────
@@ -176,6 +180,44 @@ class Api:
             return {"ok": True, "saved": True, "path": save_path}
         except Exception as exc:
             return {"ok": False, "error": f"Could not write file: {exc}"}
+
+    # ── Direct file save ─────────────────────────────────────────────────────
+
+    def save_file(self, path: str, content: str) -> dict:
+        """
+        Write `content` directly to `path` (overwrite).
+        Used when saving edits back to an already-known .md file.
+        """
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(content)
+            return {"ok": True}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def save_file_dialog(self, content: str, suggested_name: str) -> dict:
+        """
+        Open a Save-As dialog and write `content` to the chosen path.
+        """
+        save_result = webview.windows[0].create_file_dialog(
+            webview.SAVE_DIALOG,
+            directory     = os.path.expanduser("~"),
+            save_filename = suggested_name or "song.md",
+            file_types    = ("Markdown files (*.md)", "Text files (*.txt)", "All files (*.*)"),
+        )
+        if not save_result:
+            return {"ok": True, "saved": False}
+
+        path = save_result[0] if isinstance(save_result, (list, tuple)) else save_result
+        if not path.lower().endswith((".md", ".txt")):
+            path += ".md"
+
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(content)
+            return {"ok": True, "saved": True, "path": path}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
 
     # ── Utility ──────────────────────────────────────────────────────────────
 

@@ -10,8 +10,6 @@ import re
 import zlib
 import zipfile
 
-# Minimum characters per page before we assume the PDF is image-based
-_OCR_THRESHOLD_PER_PAGE = 40
 
 
 # ── Public entry point ───────────────────────────────────────────────────────
@@ -20,12 +18,12 @@ def extract_text(path: str) -> str:
     """
     Extract plain text from *path*.
 
-    Supported extensions: .txt  .pdf  .docx  .rtf
+    Supported extensions: .txt  .md  .pdf  .docx  .rtf
     Raises ValueError for unsupported types, IOError for read failures.
     """
     ext = os.path.splitext(path)[1].lower()
 
-    if ext == ".txt":
+    if ext in (".txt", ".md"):
         return _read_txt(path)
     if ext == ".pdf":
         return _read_pdf(path)
@@ -56,95 +54,72 @@ def _read_pdf(path: str) -> str:
     """
     Extract text from a PDF.
 
-    Priority:
-      1. pdfminer.six  – best text quality
-      2. pypdf         – second best
-      3. Built-in      – pure stdlib, handles most text-based PDFs
-      4. OCR           – pytesseract fallback for image-based PDFs
-    """
-    text = ""
-    page_count = _estimate_pdf_page_count(path)
+    Strategy: try each extractor in order; use the first one that returns
+    any non-empty text.  Only attempt OCR if every text extractor returns
+    nothing — which is the true signal of an image-based PDF.
 
-    # ── pdfminer.six ────────────────────────────────────────────────────────
+    Priority:
+      1. pdfminer.six  – best text quality (optional)
+      2. pypdf         – second best (optional)
+      3. Built-in      – pure stdlib, no extra deps
+      4. OCR           – pytesseract, only when all above yield nothing
+    """
+    # ── pdfminer.six ─────────────────────────────────────────────────────────
     try:
         from pdfminer.high_level import extract_text as _pm_extract
-        text = _pm_extract(path) or ""
-        if _text_is_sufficient(text, page_count):
-            return text.strip()
+        text = (_pm_extract(path) or "").strip()
+        if text:
+            return text
     except ImportError:
         pass
     except Exception:
         pass
 
-    # ── pypdf ────────────────────────────────────────────────────────────────
-    if not _text_is_sufficient(text, page_count):
-        try:
-            import pypdf
-            reader = pypdf.PdfReader(path)
-            page_count = len(reader.pages)
-            pages  = [p.extract_text() or "" for p in reader.pages]
-            text   = "\n".join(pages)
-            if _text_is_sufficient(text, page_count):
-                return text.strip()
-        except ImportError:
-            pass
-        except Exception:
-            pass
-
-    # ── Built-in stdlib extractor ────────────────────────────────────────────
-    if not _text_is_sufficient(text, page_count):
-        try:
-            candidate = _pdf_builtin(path)
-            if _text_is_sufficient(candidate, page_count):
-                return candidate.strip()
-            elif len(candidate) > len(text):
-                text = candidate
-        except Exception:
-            pass
-
-    # ── OCR fallback for image-based PDFs ────────────────────────────────────
-    if not _text_is_sufficient(text, page_count):
-        try:
-            ocr_text = _apply_ocr(path)
-            if ocr_text.strip():
-                return ocr_text.strip()
-        except Exception as ocr_exc:
-            # OCR unavailable — return whatever text we have or raise
-            if text.strip():
-                return text.strip()
-            raise IOError(
-                f"PDF appears to be image-based and OCR is unavailable: {ocr_exc}\n"
-                "Install OCR support:  pip install pytesseract Pillow pdf2image\n"
-                "Also install Tesseract:  https://github.com/tesseract-ocr/tesseract"
-            )
-
-    return text.strip() if text.strip() else _raise_pdf_empty()
-
-
-def _raise_pdf_empty():
-    raise IOError(
-        "Could not extract text from this PDF. "
-        "It may be encrypted or image-only. "
-        "Install OCR:  pip install pytesseract Pillow pdf2image"
-    )
-
-
-def _estimate_pdf_page_count(path: str) -> int:
-    """Quick estimate of page count from raw PDF bytes."""
+    # ── pypdf ─────────────────────────────────────────────────────────────────
     try:
-        with open(path, "rb") as fh:
-            data = fh.read()
-        return max(1, data.count(b"/Page ") - data.count(b"/Pages "))
+        import pypdf
+        reader = pypdf.PdfReader(path)
+        text   = "\n".join(p.extract_text() or "" for p in reader.pages).strip()
+        if text:
+            return text
+    except ImportError:
+        pass
     except Exception:
-        return 1
+        pass
 
+    # ── Built-in stdlib extractor ─────────────────────────────────────────────
+    try:
+        text = _pdf_builtin(path).strip()
+        if text:
+            return text
+    except Exception:
+        pass
 
-def _text_is_sufficient(text: str, page_count: int) -> bool:
-    """Return True if text has enough content to be considered non-image."""
-    if not text or not text.strip():
-        return False
-    chars_per_page = len(text.strip()) / max(1, page_count)
-    return chars_per_page >= _OCR_THRESHOLD_PER_PAGE
+    # ── OCR — only reached when all text extractors returned nothing ──────────
+    try:
+        ocr_text = _apply_ocr(path)
+        if ocr_text.strip():
+            return ocr_text.strip()
+    except ImportError as exc:
+        raise IOError(
+            "This PDF appears to contain no embedded text (image-based / scanned).\n"
+            "To read it, install OCR support:\n"
+            "  pip install pytesseract Pillow pymupdf\n"
+            "Then install Tesseract:\n"
+            "  Windows → https://github.com/UB-Mannheim/tesseract/wiki\n"
+            "  macOS   → brew install tesseract\n"
+            "  Linux   → sudo apt install tesseract-ocr"
+        ) from exc
+    except Exception as exc:
+        raise IOError(
+            f"Could not extract text from this PDF: {exc}\n"
+            "The file may be encrypted, corrupted, or image-only."
+        ) from exc
+
+    raise IOError(
+        "This PDF contains no readable text. "
+        "It may be blank, encrypted, or an image-only scan."
+    )
 
 
 # ── Built-in PDF text extractor ───────────────────────────────────────────────
