@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Chord Transposer</title>
+  <link rel="stylesheet" href="styles.css" />
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;700&family=Fira+Code:wght@400;700&display=swap');
+  </style>
+</head>
+<body>
+
+<div class="app">
+
+  <!-- ═══════════════════════════════ HEADER ═══════════════════════════════ -->
+  <header class="header">
+    <span class="header__logo">🎸</span>
+    <span class="header__title">Chord Transposer</span>
+    <span id="headerFilename" class="header__filename"></span>
+    <span class="header__spacer"></span>
+    <button class="btn btn--ghost btn--sm" id="clearBtn" title="Clear text">✕ Clear</button>
+    <button class="btn btn--ghost btn--sm" id="copyBtn" title="Copy output (Ctrl+Shift+C)">📋 Copy</button>
+  </header>
+
+  <!-- ══════════════════════════════ SIDEBAR ═══════════════════════════════ -->
+  <aside class="sidebar">
+
+    <!-- ── File import ───────────────────────────────────────────────────── -->
+    <div class="panel">
+      <div class="panel__header">
+        <span class="panel__icon">📂</span>
+        <span>Import</span>
+        <span class="panel__arrow">▼</span>
+      </div>
+      <div class="panel__body">
+        <div class="drop-zone" id="dropZone" tabindex="0"
+             role="button" aria-label="Drop a file or click to browse">
+          <span class="drop-zone__icon">📄</span>
+          <span class="drop-zone__text">Drop file or click to browse</span>
+          <span class="drop-zone__hint">.txt · .pdf · .docx · .rtf</span>
+        </div>
+        <input type="file" id="fileInput"
+               accept=".txt,.pdf,.docx,.rtf"
+               style="display:none" aria-hidden="true" />
+        <button class="btn btn--ghost btn--full" id="openFileBtn">
+          🗂 Open file dialog &nbsp;<kbd>Ctrl+O</kbd>
+        </button>
+      </div>
+    </div>
+
+    <!-- ── Paste text ────────────────────────────────────────────────────── -->
+    <div class="panel collapsed" id="pastePanel">
+      <div class="panel__header">
+        <span class="panel__icon">📝</span>
+        <span>Paste text</span>
+        <span class="panel__arrow">▼</span>
+      </div>
+      <div class="panel__body">
+        <textarea
+          id="inputText"
+          class="sidebar-textarea"
+          placeholder="Paste lyrics &amp; chords here…"
+          spellcheck="false"
+          autocorrect="off"
+          autocapitalize="off"
+          rows="10"
+        ></textarea>
+        <button class="btn btn--primary btn--full" id="applyTextBtn">
+          ✓ Apply
+        </button>
+      </div>
+    </div>
+
+    <!-- ── Transposition ─────────────────────────────────────────────────── -->
+    <div class="panel">
+      <div class="panel__header">
+        <span class="panel__icon">🎼</span>
+        <span>Transpose</span>
+        <span class="panel__arrow">▼</span>
+      </div>
+      <div class="panel__body">
+
+        <div class="field">
+          <label class="field__label">Semitones</label>
+          <div class="semitone-row">
+            <button class="btn btn--step" id="stepDown" title="−1 semitone">−1</button>
+            <div class="slider-wrap">
+              <input type="range" id="transposeSlider"
+                     min="-11" max="11" value="0" step="1"
+                     aria-label="Transpose semitones" />
+            </div>
+            <button class="btn btn--step" id="stepUp" title="+1 semitone">+1</button>
+            <span class="slider-value" id="sliderValue">0</span>
+          </div>
+        </div>
+
+        <button class="btn btn--ghost btn--full" id="resetBtn">
+          ↩ Reset to 0
+        </button>
+
+      </div>
+    </div>
+
+    <!-- ── Notation ───────────────────────────────────────────────────────── -->
+    <div class="panel">
+      <div class="panel__header">
+        <span class="panel__icon">🎵</span>
+        <span>Notation</span>
+        <span class="panel__arrow">▼</span>
+      </div>
+      <div class="panel__body">
+
+        <div class="field">
+          <label class="field__label">Note names</label>
+          <div class="segmented">
+            <button class="segmented__btn active" id="notationAm">American</button>
+            <button class="segmented__btn"        id="notationLat">Latin / Sol</button>
+          </div>
+        </div>
+
+        <div class="field">
+          <label class="field__label">Accidentals</label>
+          <div class="segmented">
+            <button class="segmented__btn active" id="accSharp">♯ Sharps</button>
+            <button class="segmented__btn"        id="accFlat">♭ Flats</button>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ── Appearance ─────────────────────────────────────────────────────── -->
+    <div class="panel">
+      <div class="panel__header">
+        <span class="panel__icon">🎨</span>
+        <span>Appearance</span>
+        <span class="panel__arrow">▼</span>
+      </div>
+      <div class="panel__body">
+
+        <!-- Chord colour -->
+        <div class="field">
+          <label class="field__label">Chord colour</label>
+          <div class="color-row">
+            <input type="color" id="chordColorPicker" value="#f9c74f"
+                   title="Pick chord highlight colour" />
+            <div class="color-presets" id="colorPresets">
+              <button class="color-swatch active" data-color="#f9c74f" style="background:#f9c74f" title="Amber"></button>
+              <button class="color-swatch"        data-color="#60d394" style="background:#60d394" title="Mint"></button>
+              <button class="color-swatch"        data-color="#ff6b6b" style="background:#ff6b6b" title="Coral"></button>
+              <button class="color-swatch"        data-color="#74c0fc" style="background:#74c0fc" title="Sky"></button>
+              <button class="color-swatch"        data-color="#da77f2" style="background:#da77f2" title="Lavender"></button>
+              <button class="color-swatch"        data-color="#ff922b" style="background:#ff922b" title="Orange"></button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Font -->
+        <div class="field">
+          <label class="field__label">Font</label>
+          <select id="fontSelect" class="select-control">
+            <option value="'JetBrains Mono', monospace"   selected>JetBrains Mono</option>
+            <option value="'Fira Code', monospace"               >Fira Code</option>
+            <option value="'Courier New', Courier, monospace"    >Courier New</option>
+            <option value="'Consolas', monospace"                >Consolas</option>
+            <option value="Georgia, serif"                       >Georgia</option>
+            <option value="'Segoe UI', Arial, sans-serif"        >Sans-serif</option>
+          </select>
+        </div>
+
+        <!-- Zoom -->
+        <div class="field">
+          <label class="field__label">Text size</label>
+          <div class="zoom-row">
+            <button class="btn btn--step" id="zoomOut" title="Zoom out">A−</button>
+            <span class="zoom-value" id="zoomValue">100%</span>
+            <button class="btn btn--step" id="zoomIn"  title="Zoom in">A+</button>
+            <button class="btn btn--ghost btn--xs" id="zoomReset" title="Reset zoom">↩</button>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ── Chord reference ────────────────────────────────────────────────── -->
+    <div class="panel collapsed">
+      <div class="panel__header">
+        <span class="panel__icon">ℹ️</span>
+        <span>Chord Reference</span>
+        <span class="panel__arrow">▼</span>
+      </div>
+      <div class="panel__body">
+        <div class="chord-ref">
+          <strong>Supported patterns:</strong>
+          C  Cm  C7  Cmaj7<br/>
+          C#  Db  Bb  F#m<br/>
+          Csus4  Cdim  Caug<br/>
+          C/G  Am/E  G7/B<br/>
+          Cadd9  C9  C11  C13
+        </div>
+      </div>
+    </div>
+
+  </aside>
+
+  <!-- ════════════════════════════════ MAIN ════════════════════════════════ -->
+  <main class="main">
+    <div class="output-scroll" id="outputScroll">
+
+      <!-- Placeholder -->
+      <div class="output-placeholder" id="outputPlaceholder">
+        <span class="output-placeholder__icon">🎶</span>
+        <span>Open or paste a song to get started</span>
+        <span class="output-placeholder__hint">
+          Use the sidebar to import a file or paste chords, then move the transpose slider
+        </span>
+      </div>
+
+      <!-- Rendered output -->
+      <div class="output-content" id="outputContent" style="display:none"
+           aria-live="polite" aria-label="Transposed lyrics"></div>
+
+    </div>
+  </main>
+
+</div><!-- /.app -->
+
+<div id="toast-container" aria-live="assertive" aria-atomic="true"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

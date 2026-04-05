@@ -1,0 +1,4 @@
+pywebview>=4.4.1
+# Optional – improves PDF parsing beyond the built-in minimal extractor:
+# pdfminer.six>=20221105
+# pypdf>=3.0.0
