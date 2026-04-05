@@ -1,6 +1,7 @@
 # parser.py
 # Text extraction from various file formats: .txt, .pdf, .docx, .rtf
-# Uses only the standard library where possible.
+# Uses only the standard library where possible; optionally uses
+# pdfminer.six, pypdf, pytesseract, pdf2image, or pymupdf for PDFs.
 
 from __future__ import annotations
 
@@ -8,6 +9,9 @@ import os
 import re
 import zlib
 import zipfile
+
+# Minimum characters per page before we assume the PDF is image-based
+_OCR_THRESHOLD_PER_PAGE = 40
 
 
 # ── Public entry point ───────────────────────────────────────────────────────
@@ -52,52 +56,98 @@ def _read_pdf(path: str) -> str:
     """
     Extract text from a PDF.
 
-    Strategy (in order):
-      1. pdfminer.six  – best quality, optional
-      2. pypdf         – good quality, optional
-      3. Built-in      – pure stdlib, handles most simple/text PDFs
+    Priority:
+      1. pdfminer.six  – best text quality
+      2. pypdf         – second best
+      3. Built-in      – pure stdlib, handles most text-based PDFs
+      4. OCR           – pytesseract fallback for image-based PDFs
     """
+    text = ""
+    page_count = _estimate_pdf_page_count(path)
+
     # ── pdfminer.six ────────────────────────────────────────────────────────
     try:
         from pdfminer.high_level import extract_text as _pm_extract
-        text = _pm_extract(path)
-        if text and text.strip():
-            return text
+        text = _pm_extract(path) or ""
+        if _text_is_sufficient(text, page_count):
+            return text.strip()
     except ImportError:
         pass
     except Exception:
         pass
 
     # ── pypdf ────────────────────────────────────────────────────────────────
-    try:
-        import pypdf
-        reader = pypdf.PdfReader(path)
-        pages  = [p.extract_text() or "" for p in reader.pages]
-        text   = "\n".join(pages)
-        if text.strip():
-            return text
-    except ImportError:
-        pass
-    except Exception:
-        pass
+    if not _text_is_sufficient(text, page_count):
+        try:
+            import pypdf
+            reader = pypdf.PdfReader(path)
+            page_count = len(reader.pages)
+            pages  = [p.extract_text() or "" for p in reader.pages]
+            text   = "\n".join(pages)
+            if _text_is_sufficient(text, page_count):
+                return text.strip()
+        except ImportError:
+            pass
+        except Exception:
+            pass
 
-    # ── built-in stdlib extractor ────────────────────────────────────────────
-    try:
-        text = _pdf_builtin(path)
-        if text.strip():
-            return text
-    except Exception as exc:
-        raise IOError(
-            f"Could not extract text from PDF: {exc}\n"
-            "Tip: install 'pdfminer.six' for reliable PDF support:  "
-            "pip install pdfminer.six"
-        )
+    # ── Built-in stdlib extractor ────────────────────────────────────────────
+    if not _text_is_sufficient(text, page_count):
+        try:
+            candidate = _pdf_builtin(path)
+            if _text_is_sufficient(candidate, page_count):
+                return candidate.strip()
+            elif len(candidate) > len(text):
+                text = candidate
+        except Exception:
+            pass
 
+    # ── OCR fallback for image-based PDFs ────────────────────────────────────
+    if not _text_is_sufficient(text, page_count):
+        try:
+            ocr_text = _apply_ocr(path)
+            if ocr_text.strip():
+                return ocr_text.strip()
+        except Exception as ocr_exc:
+            # OCR unavailable — return whatever text we have or raise
+            if text.strip():
+                return text.strip()
+            raise IOError(
+                f"PDF appears to be image-based and OCR is unavailable: {ocr_exc}\n"
+                "Install OCR support:  pip install pytesseract Pillow pdf2image\n"
+                "Also install Tesseract:  https://github.com/tesseract-ocr/tesseract"
+            )
+
+    return text.strip() if text.strip() else _raise_pdf_empty()
+
+
+def _raise_pdf_empty():
     raise IOError(
-        "PDF appears to contain no extractable text (may be image-only).\n"
-        "Install 'pdfminer.six' for broader PDF support."
+        "Could not extract text from this PDF. "
+        "It may be encrypted or image-only. "
+        "Install OCR:  pip install pytesseract Pillow pdf2image"
     )
 
+
+def _estimate_pdf_page_count(path: str) -> int:
+    """Quick estimate of page count from raw PDF bytes."""
+    try:
+        with open(path, "rb") as fh:
+            data = fh.read()
+        return max(1, data.count(b"/Page ") - data.count(b"/Pages "))
+    except Exception:
+        return 1
+
+
+def _text_is_sufficient(text: str, page_count: int) -> bool:
+    """Return True if text has enough content to be considered non-image."""
+    if not text or not text.strip():
+        return False
+    chars_per_page = len(text.strip()) / max(1, page_count)
+    return chars_per_page >= _OCR_THRESHOLD_PER_PAGE
+
+
+# ── Built-in PDF text extractor ───────────────────────────────────────────────
 
 def _pdf_builtin(path: str) -> str:
     """
@@ -107,49 +157,39 @@ def _pdf_builtin(path: str) -> str:
       - Parenthesis strings  (Hello World) Tj
       - Hex strings          <48656c6c6f> Tj
       - Array operator       [(Hello) (World)] TJ
-      - FlateDecode (zlib) compressed content streams
+      - FlateDecode (zlib) compressed streams
       - Basic PDF string escape sequences
+      - UTF-16-BE encoded strings (BOM detection)
     """
     with open(path, "rb") as fh:
         raw = fh.read()
 
-    # ── Step 1: decompress FlateDecode streams ───────────────────────────────
-    # Collect raw bytes + all successfully decompressed stream bodies
+    # Decompress FlateDecode streams
     chunks: list[bytes] = [raw]
-
-    # Match object dictionaries + their streams so we can check /Filter
     stream_re = re.compile(
         rb"<<([^>]{0,2000}?)>>\s*stream\r?\n(.*?)endstream",
         re.DOTALL,
     )
-
     for m in stream_re.finditer(raw):
         header = m.group(1)
         body   = m.group(2)
-
-        # Only attempt decompression when the stream declares FlateDecode
         if b"FlateDecode" not in header and b"Fl" not in header:
             continue
-
-        for wbits in (15, -15, 47):  # zlib, raw deflate, gzip
+        for wbits in (15, -15, 47):
             try:
-                decompressed = zlib.decompress(body, wbits)
-                chunks.append(decompressed)
+                chunks.append(zlib.decompress(body, wbits))
                 break
             except Exception:
                 continue
 
     all_data = b"\n".join(chunks)
 
-    # ── Step 2: extract text from BT…ET blocks ───────────────────────────────
     parts: list[str] = []
-
     for block in re.findall(rb"BT(.*?)ET", all_data, re.DOTALL):
         _extract_block_text(block, parts)
         parts.append("\n")
 
     text = "".join(parts)
-    # Clean up excessive whitespace while preserving structure
     text = re.sub(r"[ \t]{2,}", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
@@ -157,33 +197,26 @@ def _pdf_builtin(path: str) -> str:
 
 def _extract_block_text(block: bytes, out: list[str]) -> None:
     """Extract all text tokens from a single BT…ET block into `out`."""
-
-    # ── Tj / ' operator: single string ──────────────────────────────────────
-
-    # Parenthesis strings
+    # Tj / ' with parenthesis strings
     for m in re.finditer(
         rb"\(([^)\\]*(?:\\.[^)\\]*)*)\)\s*(?:Tj|\'|\")", block
     ):
         out.append(_decode_pdf_paren_string(m.group(1)))
 
-    # Hex strings
+    # Tj / ' with hex strings
     for m in re.finditer(rb"<([0-9a-fA-F\s]+)>\s*(?:Tj|\'|\")", block):
         out.append(_decode_pdf_hex_string(m.group(1)))
 
-    # ── TJ operator: array of strings and kerning numbers ───────────────────
-
+    # TJ arrays
     for arr_m in re.finditer(rb"\[([^\]]*)\]\s*TJ", block):
         arr = arr_m.group(1)
-
         for m in re.finditer(rb"\(([^)\\]*(?:\\.[^)\\]*)*)\)", arr):
             out.append(_decode_pdf_paren_string(m.group(1)))
-
         for m in re.finditer(rb"<([0-9a-fA-F\s]+)>", arr):
             out.append(_decode_pdf_hex_string(m.group(1)))
 
 
 def _decode_pdf_paren_string(b: bytes) -> str:
-    """Decode a raw PDF parenthesis-delimited string (handles escape seqs)."""
     result = bytearray()
     i = 0
     while i < len(b):
@@ -195,28 +228,23 @@ def _decode_pdf_paren_string(b: bytes) -> str:
             elif nxt in (b"\\", b"(", b")"):
                 result.append(nxt[0]); i += 2
             else:
-                # Octal escape \ddd
                 octal = b[i + 1:i + 4]
                 if octal and octal[0:1].isdigit():
                     try:
-                        result.append(int(octal[:3], 8))
-                        i += 4
+                        result.append(int(octal[:3], 8)); i += 4
                     except ValueError:
                         i += 2
                 else:
                     i += 2
         else:
-            result.append(b[i])
-            i += 1
-
+            result.append(b[i]); i += 1
     return _pdf_bytes_to_str(bytes(result))
 
 
 def _decode_pdf_hex_string(b: bytes) -> str:
-    """Decode a hex-encoded PDF string <4865 6c6c 6f>."""
-    hex_clean = b.replace(b" ", b"").replace(b"\n", b"").replace(b"\r", b"")
+    hex_clean = re.sub(rb"\s", b"", b)
     if len(hex_clean) % 2:
-        hex_clean += b"0"  # PDF spec: odd length pads with 0
+        hex_clean += b"0"
     try:
         raw = bytes.fromhex(hex_clean.decode("ascii", errors="ignore"))
         return _pdf_bytes_to_str(raw)
@@ -225,7 +253,6 @@ def _decode_pdf_hex_string(b: bytes) -> str:
 
 
 def _pdf_bytes_to_str(b: bytes) -> str:
-    """Try UTF-16-BE (common in modern PDFs), then latin-1."""
     if len(b) >= 2 and b[:2] in (b"\xfe\xff", b"\xff\xfe"):
         try:
             return b.decode("utf-16")
@@ -237,17 +264,84 @@ def _pdf_bytes_to_str(b: bytes) -> str:
         return b.decode("utf-8", errors="replace")
 
 
+# ── OCR for image-based PDFs ──────────────────────────────────────────────────
+
+def _apply_ocr(path: str) -> str:
+    """
+    Apply Tesseract OCR to a PDF by rendering each page to an image first.
+
+    Requires:
+      - pytesseract  (pip install pytesseract)
+      - Pillow       (pip install Pillow)
+      - One of:
+          pdf2image  (pip install pdf2image)  + poppler in PATH
+          pymupdf    (pip install pymupdf)
+    """
+    import pytesseract  # type: ignore
+    from PIL import Image, ImageFilter, ImageOps  # type: ignore
+
+    images = _pdf_to_images(path)
+    if not images:
+        raise IOError("Could not render PDF pages to images for OCR.")
+
+    texts: list[str] = []
+    for img in images:
+        # Preprocess: grayscale → mild sharpening → high contrast
+        img = img.convert("L")
+        img = img.filter(ImageFilter.SHARPEN)
+        img = ImageOps.autocontrast(img)
+        text = pytesseract.image_to_string(img, lang="eng+spa")
+        if text.strip():
+            texts.append(text)
+
+    return "\n\n".join(texts)
+
+
+def _pdf_to_images(path: str) -> list:
+    """
+    Render each PDF page to a PIL Image.
+
+    Tries pdf2image first (needs poppler), then pymupdf (fitz).
+    Raises ImportError if neither is available.
+    """
+    # ── pdf2image ────────────────────────────────────────────────────────────
+    try:
+        from pdf2image import convert_from_path  # type: ignore
+        return convert_from_path(path, dpi=200)
+    except ImportError:
+        pass
+
+    # ── pymupdf (fitz) ───────────────────────────────────────────────────────
+    try:
+        import fitz  # type: ignore  (pymupdf)
+        from PIL import Image
+        import io
+        doc    = fitz.open(path)
+        images = []
+        for page in doc:
+            pix  = page.get_pixmap(dpi=200)
+            data = pix.tobytes("png")
+            images.append(Image.open(io.BytesIO(data)))
+        return images
+    except ImportError:
+        pass
+
+    raise ImportError(
+        "Cannot render PDF pages for OCR. "
+        "Install pdf2image+poppler or pymupdf:  "
+        "pip install pdf2image   OR   pip install pymupdf"
+    )
+
+
 # ── DOCX ─────────────────────────────────────────────────────────────────────
-# A .docx file is a ZIP archive; text lives in word/document.xml.
 
 def _read_docx(path: str) -> str:
     """Extract plain text from a .docx file using stdlib only."""
     import xml.etree.ElementTree as ET
 
-    WNS   = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
-    TAG_P = f"{{{WNS}}}p"
-    TAG_T = f"{{{WNS}}}t"
-    TAG_BR = f"{{{WNS}}}br"
+    WNS    = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    TAG_P  = f"{{{WNS}}}p"
+    TAG_T  = f"{{{WNS}}}t"
 
     try:
         with zipfile.ZipFile(path) as zf:
@@ -255,7 +349,7 @@ def _read_docx(path: str) -> str:
     except KeyError:
         raise IOError("Invalid .docx file: missing word/document.xml")
     except zipfile.BadZipFile:
-        raise IOError("File is not a valid .docx (bad ZIP structure).")
+        raise IOError("File is not a valid .docx (bad ZIP).")
 
     tree       = ET.fromstring(xml_bytes)
     paragraphs: list[str] = []
@@ -277,7 +371,6 @@ def _read_docx(path: str) -> str:
 
 
 def _docx_fallback(tree) -> list[str]:
-    """Namespace-agnostic text extraction for non-standard DOCX variants."""
     paragraphs: list[str] = []
     for elem in tree.iter():
         local = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
@@ -292,33 +385,18 @@ def _docx_fallback(tree) -> list[str]:
 
 
 # ── RTF ──────────────────────────────────────────────────────────────────────
-# RTF is text-based; we strip control words with a small state machine.
 
 def _read_rtf(path: str) -> str:
-    """Extract plain text from an RTF file using a pure-Python parser."""
     for enc in ("utf-8", "latin-1"):
         try:
             with open(path, "r", encoding=enc, errors="replace") as fh:
-                raw = fh.read()
-            break
+                return _rtf_to_text(fh.read())
         except Exception:
             continue
-    else:
-        raise IOError(f"Cannot read '{path}'")
-
-    return _rtf_to_text(raw)
+    raise IOError(f"Cannot read '{path}'")
 
 
 def _rtf_to_text(rtf: str) -> str:
-    """
-    Strip RTF markup and return plain text.
-
-    Handles:
-      - Brace depth tracking
-      - Ignorable destinations {\\* ...}
-      - Control words: \\par \\line \\tab \\' (hex char) etc.
-      - Unicode escapes \\uNNNN
-    """
     output: list[str] = []
     i             = 0
     depth         = 0
@@ -329,9 +407,7 @@ def _rtf_to_text(rtf: str) -> str:
         ch = rtf[i]
 
         if ch == "{":
-            depth += 1
-            i += 1
-            # Detect ignorable destination {\* ...}
+            depth += 1; i += 1
             if i < n and rtf[i] == "\\":
                 j = i
                 while j < n and rtf[j] not in (" ", "{", "}", "\r", "\n"):
@@ -343,19 +419,15 @@ def _rtf_to_text(rtf: str) -> str:
         if ch == "}":
             if ignore_depth is not None and depth == ignore_depth:
                 ignore_depth = None
-            depth -= 1
-            i += 1
+            depth -= 1; i += 1
             continue
 
         if ignore_depth is not None:
-            i += 1
-            continue
+            i += 1; continue
 
         if ch == "\\":
             i += 1
-            if i >= n:
-                break
-
+            if i >= n: break
             nxt = rtf[i]
 
             if nxt == "\\":
@@ -369,7 +441,6 @@ def _rtf_to_text(rtf: str) -> str:
             elif nxt == "\r":
                 i += 1
             elif nxt == "'":
-                # Hex character \'XX
                 if i + 2 < n:
                     try:
                         output.append(chr(int(rtf[i+1:i+3], 16)))
@@ -379,53 +450,40 @@ def _rtf_to_text(rtf: str) -> str:
                 else:
                     i += 1
             elif nxt == "u":
-                # Unicode escape \uNNNN (followed by replacement char)
                 j = i + 1
                 if j < n and (rtf[j].isdigit() or rtf[j] == "-"):
                     k = j
-                    if rtf[k] == "-":
-                        k += 1
-                    while k < n and rtf[k].isdigit():
-                        k += 1
+                    if rtf[k] == "-": k += 1
+                    while k < n and rtf[k].isdigit(): k += 1
                     try:
-                        codepoint = int(rtf[j:k])
-                        if codepoint < 0:
-                            codepoint += 65536
-                        output.append(chr(codepoint))
+                        cp = int(rtf[j:k])
+                        if cp < 0: cp += 65536
+                        output.append(chr(cp))
                     except (ValueError, OverflowError):
                         pass
                     i = k
-                    # Skip one replacement character that follows
-                    if i < n and rtf[i] == " ":
-                        i += 1
+                    if i < n and rtf[i] == " ": i += 1
                 else:
                     i += 1
             elif nxt.isalpha() or nxt == "-":
                 j = i
-                if rtf[j] == "-":
-                    j += 1
-                while j < n and rtf[j].isalpha():
-                    j += 1
+                if rtf[j] == "-": j += 1
+                while j < n and rtf[j].isalpha(): j += 1
                 word = rtf[i:j]
-                # Optional numeric parameter
                 k = j
                 if k < n and (rtf[k].isdigit() or rtf[k] == "-"):
-                    while k < n and (rtf[k].isdigit() or rtf[k] == "-"):
-                        k += 1
-                if k < n and rtf[k] == " ":
-                    k += 1  # consume trailing space delimiter
+                    while k < n and (rtf[k].isdigit() or rtf[k] == "-"): k += 1
+                if k < n and rtf[k] == " ": k += 1
 
-                if   word == "par":      output.append("\n\n")
-                elif word == "line":     output.append("\n")
-                elif word == "tab":      output.append("\t")
-                elif word == "endash":   output.append("–")
-                elif word == "emdash":   output.append("—")
-                elif word == "lquote":   output.append("\u2018")
-                elif word == "rquote":   output.append("\u2019")
-                elif word == "ldblquote":output.append("\u201C")
-                elif word == "rdblquote":output.append("\u201D")
-                # All other control words are skipped
-
+                if   word == "par":       output.append("\n\n")
+                elif word == "line":      output.append("\n")
+                elif word == "tab":       output.append("\t")
+                elif word == "endash":    output.append("–")
+                elif word == "emdash":    output.append("—")
+                elif word == "lquote":    output.append("\u2018")
+                elif word == "rquote":    output.append("\u2019")
+                elif word == "ldblquote": output.append("\u201C")
+                elif word == "rdblquote": output.append("\u201D")
                 i = k
             else:
                 i += 1

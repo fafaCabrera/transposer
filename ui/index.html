@@ -19,8 +19,9 @@
     <span class="header__title">Chord Transposer</span>
     <span id="headerFilename" class="header__filename"></span>
     <span class="header__spacer"></span>
-    <button class="btn btn--ghost btn--sm" id="clearBtn" title="Clear text">✕ Clear</button>
-    <button class="btn btn--ghost btn--sm" id="copyBtn" title="Copy output (Ctrl+Shift+C)">📋 Copy</button>
+    <button class="btn btn--ghost btn--sm" id="clearBtn"  title="Clear all">✕ Clear</button>
+    <button class="btn btn--ghost btn--sm" id="exportBtn" title="Export as Markdown">⬇ Export .md</button>
+    <button class="btn btn--ghost btn--sm" id="copyBtn"   title="Copy output (Ctrl+Shift+C)">📋 Copy</button>
   </header>
 
   <!-- ══════════════════════════════ SIDEBAR ═══════════════════════════════ -->
@@ -34,18 +35,33 @@
         <span class="panel__arrow">▼</span>
       </div>
       <div class="panel__body">
+
+        <!-- Drag & drop zone -->
         <div class="drop-zone" id="dropZone" tabindex="0"
              role="button" aria-label="Drop a file or click to browse">
           <span class="drop-zone__icon">📄</span>
           <span class="drop-zone__text">Drop file or click to browse</span>
-          <span class="drop-zone__hint">.txt · .pdf · .docx · .rtf</span>
+          <span class="drop-zone__hint">.txt · .pdf · .docx · .rtf · .lnk</span>
         </div>
         <input type="file" id="fileInput"
-               accept=".txt,.pdf,.docx,.rtf"
+               accept=".txt,.pdf,.docx,.rtf,.lnk"
                style="display:none" aria-hidden="true" />
+
+        <!-- Native dialog button -->
         <button class="btn btn--ghost btn--full" id="openFileBtn">
           🗂 Open file dialog &nbsp;<kbd>Ctrl+O</kbd>
         </button>
+
+        <!-- URL fetch -->
+        <div class="field">
+          <label class="field__label" for="urlInput">Fetch from URL</label>
+          <div class="url-row">
+            <input type="url" id="urlInput" class="url-input"
+                   placeholder="https://…" autocomplete="off" spellcheck="false" />
+            <button class="btn btn--primary btn--icon" id="urlFetchBtn" title="Fetch">↓</button>
+          </div>
+        </div>
+
       </div>
     </div>
 
@@ -95,9 +111,7 @@
           </div>
         </div>
 
-        <button class="btn btn--ghost btn--full" id="resetBtn">
-          ↩ Reset to 0
-        </button>
+        <button class="btn btn--ghost btn--full" id="resetBtn">↩ Reset to 0</button>
 
       </div>
     </div>
@@ -139,12 +153,10 @@
       </div>
       <div class="panel__body">
 
-        <!-- Chord colour -->
         <div class="field">
           <label class="field__label">Chord colour</label>
           <div class="color-row">
-            <input type="color" id="chordColorPicker" value="#f9c74f"
-                   title="Pick chord highlight colour" />
+            <input type="color" id="chordColorPicker" value="#f9c74f" />
             <div class="color-presets" id="colorPresets">
               <button class="color-swatch active" data-color="#f9c74f" style="background:#f9c74f" title="Amber"></button>
               <button class="color-swatch"        data-color="#60d394" style="background:#60d394" title="Mint"></button>
@@ -156,27 +168,25 @@
           </div>
         </div>
 
-        <!-- Font -->
         <div class="field">
           <label class="field__label">Font</label>
           <select id="fontSelect" class="select-control">
-            <option value="'JetBrains Mono', monospace"   selected>JetBrains Mono</option>
-            <option value="'Fira Code', monospace"               >Fira Code</option>
-            <option value="'Courier New', Courier, monospace"    >Courier New</option>
-            <option value="'Consolas', monospace"                >Consolas</option>
-            <option value="Georgia, serif"                       >Georgia</option>
-            <option value="'Segoe UI', Arial, sans-serif"        >Sans-serif</option>
+            <option value="'JetBrains Mono', monospace"        selected>JetBrains Mono</option>
+            <option value="'Fira Code', monospace"                     >Fira Code</option>
+            <option value="'Courier New', Courier, monospace"          >Courier New</option>
+            <option value="'Consolas', monospace"                      >Consolas</option>
+            <option value="Georgia, serif"                             >Georgia</option>
+            <option value="'Segoe UI', Arial, sans-serif"              >Sans-serif</option>
           </select>
         </div>
 
-        <!-- Zoom -->
         <div class="field">
           <label class="field__label">Text size</label>
           <div class="zoom-row">
             <button class="btn btn--step" id="zoomOut" title="Zoom out">A−</button>
             <span class="zoom-value" id="zoomValue">100%</span>
             <button class="btn btn--step" id="zoomIn"  title="Zoom in">A+</button>
-            <button class="btn btn--ghost btn--xs" id="zoomReset" title="Reset zoom">↩</button>
+            <button class="btn btn--ghost btn--xs" id="zoomReset">↩</button>
           </div>
         </div>
 
@@ -197,7 +207,8 @@
           C#  Db  Bb  F#m<br/>
           Csus4  Cdim  Caug<br/>
           C/G  Am/E  G7/B<br/>
-          Cadd9  C9  C11  C13
+          Cadd9  C9  C11  C13<br/>
+          F#m7(b13)  E7(13)
         </div>
       </div>
     </div>
@@ -208,16 +219,14 @@
   <main class="main">
     <div class="output-scroll" id="outputScroll">
 
-      <!-- Placeholder -->
       <div class="output-placeholder" id="outputPlaceholder">
         <span class="output-placeholder__icon">🎶</span>
         <span>Open or paste a song to get started</span>
         <span class="output-placeholder__hint">
-          Use the sidebar to import a file or paste chords, then move the transpose slider
+          Import a file, fetch a URL, or paste chords — then move the transpose slider
         </span>
       </div>
 
-      <!-- Rendered output -->
       <div class="output-content" id="outputContent" style="display:none"
            aria-live="polite" aria-label="Transposed lyrics"></div>
 
@@ -225,6 +234,14 @@
   </main>
 
 </div><!-- /.app -->
+
+<!-- Loading overlay for slow operations (OCR, URL fetch) -->
+<div class="loading-overlay" id="loadingOverlay" style="display:none">
+  <div class="loading-box">
+    <div class="spinner"></div>
+    <span id="loadingMsg">Loading…</span>
+  </div>
+</div>
 
 <div id="toast-container" aria-live="assertive" aria-atomic="true"></div>
 

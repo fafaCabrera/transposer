@@ -4,12 +4,13 @@
  * Features:
  *  - CLI file pre-load (get_startup_file on init)
  *  - File open dialog + drag-drop + sidebar paste
+ *  - URL fetch with loading overlay
  *  - Semitone slider with ±1 step buttons
  *  - Notation & accidental toggles
  *  - Chord colour picker + preset swatches
- *  - Font selector
- *  - Zoom in/out controls
- *  - Real-time transposition (debounced)
+ *  - Font selector + zoom controls
+ *  - Real-time transposition (debounced 120ms)
+ *  - Markdown export via save dialog
  *  - Copy to clipboard
  */
 
@@ -18,14 +19,16 @@
 // ── Application state ─────────────────────────────────────────────────────────
 
 const state = {
-  rawText:      "",          // current source text
-  semitones:    0,           // transposition -11…+11
-  notation:     "american",  // "american" | "latin"
-  accidental:   "sharp",     // "sharp" | "flat"
-  chordColor:   "#f9c74f",   // CSS colour for chord highlight
-  zoom:         100,         // output font-size percentage (60…220)
+  rawText:      "",           // current source text
+  songName:     "",           // filename without extension (for export)
+  semitones:    0,            // transposition -11…+11
+  notation:     "american",   // "american" | "latin"
+  accidental:   "sharp",      // "sharp" | "flat"
+  chordColor:   "#f9c74f",    // chord highlight CSS colour
+  zoom:         100,          // output font-size %
+  lastLines:    [],           // most recent tokenised lines from Python
   debounceTimer: null,
-  initDone:     false,       // guard against double-init
+  initDone:     false,
 };
 
 // ── DOM helpers ───────────────────────────────────────────────────────────────
@@ -34,54 +37,59 @@ const $ = id => document.getElementById(id);
 
 const els = {
   // Header
-  headerFilename:  $("headerFilename"),
-  clearBtn:        $("clearBtn"),
-  copyBtn:         $("copyBtn"),
+  headerFilename:   $("headerFilename"),
+  clearBtn:         $("clearBtn"),
+  exportBtn:        $("exportBtn"),
+  copyBtn:          $("copyBtn"),
 
   // Import panel
-  dropZone:        $("dropZone"),
-  fileInput:       $("fileInput"),
-  openFileBtn:     $("openFileBtn"),
+  dropZone:         $("dropZone"),
+  fileInput:        $("fileInput"),
+  openFileBtn:      $("openFileBtn"),
+  urlInput:         $("urlInput"),
+  urlFetchBtn:      $("urlFetchBtn"),
 
   // Paste panel
-  inputText:       $("inputText"),
-  applyTextBtn:    $("applyTextBtn"),
+  inputText:        $("inputText"),
+  applyTextBtn:     $("applyTextBtn"),
 
   // Transposition
-  slider:          $("transposeSlider"),
-  sliderValue:     $("sliderValue"),
-  stepDown:        $("stepDown"),
-  stepUp:          $("stepUp"),
-  resetBtn:        $("resetBtn"),
+  slider:           $("transposeSlider"),
+  sliderValue:      $("sliderValue"),
+  stepDown:         $("stepDown"),
+  stepUp:           $("stepUp"),
+  resetBtn:         $("resetBtn"),
 
   // Notation
-  notationAm:      $("notationAm"),
-  notationLat:     $("notationLat"),
-  accSharp:        $("accSharp"),
-  accFlat:         $("accFlat"),
+  notationAm:       $("notationAm"),
+  notationLat:      $("notationLat"),
+  accSharp:         $("accSharp"),
+  accFlat:          $("accFlat"),
 
   // Appearance
   chordColorPicker: $("chordColorPicker"),
-  colorPresets:    $("colorPresets"),
-  fontSelect:      $("fontSelect"),
-  zoomOut:         $("zoomOut"),
-  zoomIn:          $("zoomIn"),
-  zoomReset:       $("zoomReset"),
-  zoomValue:       $("zoomValue"),
+  colorPresets:     $("colorPresets"),
+  fontSelect:       $("fontSelect"),
+  zoomOut:          $("zoomOut"),
+  zoomIn:           $("zoomIn"),
+  zoomReset:        $("zoomReset"),
+  zoomValue:        $("zoomValue"),
 
   // Output
-  outputContent:   $("outputContent"),
+  outputContent:    $("outputContent"),
   outputPlaceholder: $("outputPlaceholder"),
+
+  // Loading overlay
+  loadingOverlay:   $("loadingOverlay"),
+  loadingMsg:       $("loadingMsg"),
 };
 
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
 
-// pywebview fires "pywebviewready" when the JS bridge is available.
 window.addEventListener("pywebviewready", () => {
   if (!state.initDone) { state.initDone = true; init(); }
 });
 
-// Fallback poll — some pywebview builds fire DOMContentLoaded first.
 document.addEventListener("DOMContentLoaded", () => {
   const poll = setInterval(() => {
     if (window.pywebview && window.pywebview.api) {
@@ -94,6 +102,7 @@ document.addEventListener("DOMContentLoaded", () => {
 async function init() {
   bindPanelHeaders();
   bindFileControls();
+  bindUrlFetch();
   bindPastePanel();
   bindSlider();
   bindStepButtons();
@@ -104,22 +113,21 @@ async function init() {
   bindZoomControls();
   bindHeaderButtons();
   bindKeyboard();
+
   applyChordColor(state.chordColor);
   updateSliderLabel();
 
-  // ── Load file passed as CLI argument ──────────────────────────────────────
+  // Load file passed as CLI argument
   try {
     const result = await window.pywebview.api.get_startup_file();
     if (result && result.ok) {
       loadText(result.text, result.filename || "");
       showToast("success", `Loaded: ${result.filename || "file"}`);
     }
-  } catch (_) {
-    // No CLI argument — that's fine
-  }
+  } catch (_) { /* no CLI arg — normal */ }
 }
 
-// ── Panel collapse/expand ─────────────────────────────────────────────────────
+// ── Panel collapse / expand ───────────────────────────────────────────────────
 
 function bindPanelHeaders() {
   document.querySelectorAll(".panel__header").forEach(header => {
@@ -129,7 +137,7 @@ function bindPanelHeaders() {
   });
 }
 
-// ── File controls ─────────────────────────────────────────────────────────────
+// ── File import controls ──────────────────────────────────────────────────────
 
 function bindFileControls() {
   els.openFileBtn.addEventListener("click", openNativeFile);
@@ -168,29 +176,35 @@ async function openNativeFile() {
 }
 
 async function readFileObject(file) {
-  const allowed = [".txt", ".pdf", ".docx", ".rtf"];
+  const allowed = [".txt", ".pdf", ".docx", ".rtf", ".lnk"];
   const ext = "." + file.name.split(".").pop().toLowerCase();
   if (!allowed.includes(ext)) {
     showToast("error", `Unsupported type: ${ext}`);
     return;
   }
-  showToast("info", `Loading ${file.name}…`);
+
+  // PDFs may trigger OCR — show loading overlay
+  if (ext === ".pdf") showLoading("Extracting PDF…");
+  else                showLoading(`Loading ${file.name}…`);
+
   try {
     const b64    = await fileToBase64(file);
     const result = await window.pywebview.api.upload_file(file.name, b64);
-    handleFileResult(result, file.name);
+    handleFileResult(result, stripExt(file.name));
   } catch (err) {
     showToast("error", "Failed to read file.");
     console.error(err);
+  } finally {
+    hideLoading();
   }
 }
 
-function handleFileResult(result, filename) {
+function handleFileResult(result, nameHint) {
   if (!result || !result.ok) {
     showToast("error", result?.error || "Unknown error.");
     return;
   }
-  loadText(result.text, filename || result.filename || "");
+  loadText(result.text, nameHint || result.filename || "");
   showToast("success", "File loaded.");
 }
 
@@ -203,6 +217,43 @@ function fileToBase64(file) {
   });
 }
 
+// ── URL fetch ─────────────────────────────────────────────────────────────────
+
+function bindUrlFetch() {
+  const doFetch = () => {
+    const url = els.urlInput.value.trim();
+    if (url) fetchFromUrl(url);
+  };
+
+  els.urlFetchBtn.addEventListener("click", doFetch);
+
+  els.urlInput.addEventListener("keydown", e => {
+    if (e.key === "Enter") { e.preventDefault(); doFetch(); }
+  });
+}
+
+async function fetchFromUrl(url) {
+  showLoading("Fetching URL…");
+  try {
+    const result = await window.pywebview.api.load_url(url);
+    if (!result || !result.ok) {
+      showToast("error", result?.error || "Failed to fetch URL.");
+      return;
+    }
+    // Derive a name from the URL hostname
+    let name = "";
+    try { name = new URL(url.startsWith("http") ? url : "https://" + url).hostname; }
+    catch (_) { name = "url"; }
+    loadText(result.text, name);
+    showToast("success", "URL content loaded.");
+  } catch (err) {
+    showToast("error", "Could not reach URL.");
+    console.error(err);
+  } finally {
+    hideLoading();
+  }
+}
+
 // ── Paste panel ───────────────────────────────────────────────────────────────
 
 function bindPastePanel() {
@@ -213,12 +264,13 @@ function bindPastePanel() {
   });
 }
 
-// ── Load text into state + trigger transpose ───────────────────────────────────
+// ── Load text → state ─────────────────────────────────────────────────────────
 
-function loadText(text, filename) {
-  state.rawText            = text;
-  els.inputText.value      = text;
-  els.headerFilename.textContent = filename || "";
+function loadText(text, name) {
+  state.rawText             = text;
+  state.songName            = name || "";
+  els.inputText.value       = text;
+  els.headerFilename.textContent = name || "";
   scheduleTranspose();
 }
 
@@ -226,38 +278,73 @@ function loadText(text, filename) {
 
 function bindHeaderButtons() {
   els.clearBtn.addEventListener("click", () => {
-    state.rawText            = "";
-    els.inputText.value      = "";
+    state.rawText = "";
+    state.songName = "";
+    state.lastLines = [];
+    els.inputText.value = "";
     els.headerFilename.textContent = "";
     renderEmpty();
   });
 
   els.copyBtn.addEventListener("click", copyOutput);
+  els.exportBtn.addEventListener("click", exportMarkdown);
 }
 
 function copyOutput() {
   const text = els.outputContent.textContent || "";
   if (!text.trim()) { showToast("error", "Nothing to copy."); return; }
 
-  if (navigator.clipboard) {
-    navigator.clipboard.writeText(text)
-      .then(() => showToast("success", "Copied!"))
-      .catch(() => fallbackCopy(text));
-  } else {
-    fallbackCopy(text);
-  }
+  const write = txt => {
+    navigator.clipboard
+      ? navigator.clipboard.writeText(txt).then(() => showToast("success", "Copied!")).catch(() => fallbackCopy(txt))
+      : fallbackCopy(txt);
+  };
+  write(text);
 }
 
 function fallbackCopy(text) {
   const ta = Object.assign(document.createElement("textarea"), {
-    value: text,
-    style: "position:fixed;opacity:0",
+    value: text, style: "position:fixed;opacity:0",
   });
   document.body.appendChild(ta);
   ta.select();
   document.execCommand("copy");
   document.body.removeChild(ta);
   showToast("success", "Copied!");
+}
+
+// ── Markdown export ───────────────────────────────────────────────────────────
+
+async function exportMarkdown() {
+  if (!state.rawText.trim()) { showToast("error", "Nothing to export."); return; }
+  if (!state.lastLines.length) { showToast("error", "Transpose first."); return; }
+
+  showLoading("Preparing export…");
+  try {
+    const result = await window.pywebview.api.export_markdown(
+      state.rawText,
+      state.lastLines,
+      state.songName || "song",
+      state.semitones,
+      state.accidental === "flat",
+      state.notation,
+    );
+
+    if (!result.ok) {
+      showToast("error", result.error || "Export failed.");
+      return;
+    }
+    if (result.saved) {
+      showToast("success", `Saved: ${result.path.split(/[/\\]/).pop()}`);
+    } else {
+      showToast("info", "Export cancelled.");
+    }
+  } catch (err) {
+    showToast("error", "Export error.");
+    console.error(err);
+  } finally {
+    hideLoading();
+  }
 }
 
 // ── Slider ────────────────────────────────────────────────────────────────────
@@ -291,7 +378,6 @@ function setSemitones(n) {
 function bindStepButtons() {
   els.stepDown.addEventListener("click", () => setSemitones(state.semitones - 1));
   els.stepUp.addEventListener("click",   () => setSemitones(state.semitones + 1));
-
   els.resetBtn.addEventListener("click", () => setSemitones(0));
 }
 
@@ -331,15 +417,12 @@ function setActive(on, off) {
 // ── Chord colour picker ───────────────────────────────────────────────────────
 
 function bindColorPicker() {
-  // Live colour input
   els.chordColorPicker.addEventListener("input", e => {
     applyChordColor(e.target.value);
-    // Deactivate all swatches when using free picker
     els.colorPresets.querySelectorAll(".color-swatch")
       .forEach(s => s.classList.remove("active"));
   });
 
-  // Preset swatches
   els.colorPresets.querySelectorAll(".color-swatch").forEach(swatch => {
     swatch.addEventListener("click", () => {
       const color = swatch.dataset.color;
@@ -355,15 +438,10 @@ function bindColorPicker() {
 function applyChordColor(color) {
   state.chordColor = color;
   document.documentElement.style.setProperty("--chord-color", color);
-
-  // Derive a subtle background from the color (15% opacity equivalent)
-  // Using inline alpha trick for broad browser support
   const r = parseInt(color.slice(1, 3), 16);
   const g = parseInt(color.slice(3, 5), 16);
   const b = parseInt(color.slice(5, 7), 16);
-  document.documentElement.style.setProperty(
-    "--chord-bg", `rgba(${r},${g},${b},0.13)`
-  );
+  document.documentElement.style.setProperty("--chord-bg", `rgba(${r},${g},${b},0.13)`);
 }
 
 // ── Font selector ─────────────────────────────────────────────────────────────
@@ -376,9 +454,7 @@ function bindFontSelector() {
 
 // ── Zoom controls ─────────────────────────────────────────────────────────────
 
-const ZOOM_STEP = 10;
-const ZOOM_MIN  = 60;
-const ZOOM_MAX  = 220;
+const ZOOM_STEP = 10, ZOOM_MIN = 60, ZOOM_MAX = 220;
 
 function bindZoomControls() {
   els.zoomOut.addEventListener("click",   () => setZoom(state.zoom - ZOOM_STEP));
@@ -388,8 +464,9 @@ function bindZoomControls() {
 
 function setZoom(pct) {
   state.zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, pct));
-  const px   = (14 * state.zoom / 100).toFixed(1) + "px";
-  document.documentElement.style.setProperty("--output-size", px);
+  document.documentElement.style.setProperty(
+    "--output-size", (14 * state.zoom / 100).toFixed(1) + "px"
+  );
   els.zoomValue.textContent = `${state.zoom}%`;
 }
 
@@ -416,6 +493,7 @@ async function runTranspose() {
       return;
     }
 
+    state.lastLines = result.lines;
     renderOutput(result.lines);
   } catch (err) {
     showToast("error", "Communication error.");
@@ -460,15 +538,26 @@ function renderOutput(lines) {
   els.outputContent.innerHTML = "";
   els.outputContent.appendChild(frag);
 
-  // Re-apply font from selector (survives innerHTML wipe)
   if (els.fontSelect.value) {
     els.outputContent.style.fontFamily = els.fontSelect.value;
   }
 }
 
 function renderEmpty() {
-  els.outputContent.style.display     = "none";
-  els.outputPlaceholder.style.display = "flex";
+  els.outputContent.style.display      = "none";
+  els.outputPlaceholder.style.display  = "flex";
+  state.lastLines = [];
+}
+
+// ── Loading overlay ───────────────────────────────────────────────────────────
+
+function showLoading(msg) {
+  els.loadingMsg.textContent    = msg || "Loading…";
+  els.loadingOverlay.style.display = "flex";
+}
+
+function hideLoading() {
+  els.loadingOverlay.style.display = "none";
 }
 
 // ── Toast notifications ───────────────────────────────────────────────────────
@@ -487,47 +576,36 @@ function showToast(type, message) {
 
 function bindKeyboard() {
   document.addEventListener("keydown", e => {
-    const inTextarea = document.activeElement === els.inputText;
+    const inField = ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName);
 
-    // Ctrl/Cmd + O → open file
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "o") {
-      e.preventDefault();
-      openNativeFile();
-      return;
+      e.preventDefault(); openNativeFile(); return;
     }
-
-    // Ctrl/Cmd + Shift + C → copy output
     if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === "C") {
-      e.preventDefault();
-      copyOutput();
-      return;
+      e.preventDefault(); copyOutput(); return;
     }
-
-    // Ctrl/Cmd + = / - → zoom
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === "E") {
+      e.preventDefault(); exportMarkdown(); return;
+    }
     if ((e.ctrlKey || e.metaKey) && (e.key === "=" || e.key === "+")) {
-      e.preventDefault();
-      setZoom(state.zoom + ZOOM_STEP);
-      return;
+      e.preventDefault(); setZoom(state.zoom + ZOOM_STEP); return;
     }
     if ((e.ctrlKey || e.metaKey) && e.key === "-") {
-      e.preventDefault();
-      setZoom(state.zoom - ZOOM_STEP);
-      return;
+      e.preventDefault(); setZoom(state.zoom - ZOOM_STEP); return;
     }
     if ((e.ctrlKey || e.metaKey) && e.key === "0") {
-      e.preventDefault();
-      setZoom(100);
-      return;
+      e.preventDefault(); setZoom(100); return;
     }
 
-    // Arrow keys → change semitones (not while typing)
-    if (!inTextarea) {
-      if (e.key === "ArrowUp"   || e.key === "ArrowRight") {
-        e.preventDefault(); setSemitones(state.semitones + 1);
-      }
-      if (e.key === "ArrowDown" || e.key === "ArrowLeft") {
-        e.preventDefault(); setSemitones(state.semitones - 1);
-      }
+    if (!inField) {
+      if (e.key === "ArrowUp"   || e.key === "ArrowRight") { e.preventDefault(); setSemitones(state.semitones + 1); }
+      if (e.key === "ArrowDown" || e.key === "ArrowLeft")  { e.preventDefault(); setSemitones(state.semitones - 1); }
     }
   });
+}
+
+// ── Utilities ─────────────────────────────────────────────────────────────────
+
+function stripExt(filename) {
+  return filename.replace(/\.[^/.]+$/, "");
 }

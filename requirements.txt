@@ -1,4 +1,27 @@
+# ── Required ────────────────────────────────────────────────────────────────
 pywebview>=4.4.1
-# Optional – improves PDF parsing beyond the built-in minimal extractor:
+
+# ── Recommended: PDF text extraction ────────────────────────────────────────
+# Uncomment whichever you prefer (pdfminer.six is more accurate for lyrics):
 # pdfminer.six>=20221105
 # pypdf>=3.0.0
+
+# ── Optional: OCR for image-based PDFs ──────────────────────────────────────
+# Requires Tesseract binary installed separately:
+#   Windows: https://github.com/UB-Mannheim/tesseract/wiki
+#   macOS:   brew install tesseract
+#   Linux:   apt install tesseract-ocr
+#
+# pytesseract>=0.3.10
+# Pillow>=10.0.0
+#
+# PDF→image rendering (choose one):
+# pdf2image>=1.16.0     # also needs poppler in PATH
+# pymupdf>=1.23.0       # self-contained, no extra binary needed
+
+# ── Optional: URL fetching & HTML parsing ───────────────────────────────────
+# requests>=2.31.0
+# beautifulsoup4>=4.12.0
+
+# ── Optional: Windows .lnk shortcut resolution (alternative to PowerShell) ──
+# winshell>=0.6
