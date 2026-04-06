@@ -35,6 +35,7 @@ const els = {
   headerFilename:   $("headerFilename"),
   clearBtn:         $("clearBtn"),
   editBtn:          $("editBtn"),
+  favBtn:           $("favBtn"),
   exportBtn:        $("exportBtn"),
   copyBtn:          $("copyBtn"),
 
@@ -125,8 +126,32 @@ async function init() {
   initSidebarDragDrop();
   bindKeyboard();
 
-  applyChordColor(state.chordColor);
   updateSliderLabel();
+
+  // Restore persisted appearance settings before first render
+  try {
+    const st = await window.pywebview.api.get_ui_state();
+    if (st) {
+      if (st.chord_color) {
+        applyChordColor(st.chord_color);
+        els.chordColorPicker.value = st.chord_color;
+        els.colorPresets.querySelectorAll(".color-swatch").forEach(s => {
+          s.classList.toggle("active", s.dataset.color === st.chord_color);
+        });
+      } else {
+        applyChordColor(state.chordColor);
+      }
+      if (st.zoom) {
+        setZoom(Number(st.zoom));
+      }
+      if (st.font) {
+        els.fontSelect.value = st.font;
+        els.outputContent.style.fontFamily = st.font;
+      }
+    }
+  } catch (_) {
+    applyChordColor(state.chordColor);
+  }
 
   // Load file/URL passed as CLI argument
   try {
@@ -353,8 +378,54 @@ function loadText(text, name, path, ext, meta) {
   state.isDirty  = false;
   els.inputText.value = text;
   updateDirtyIndicator();
+  updateFavBtn();
   exitEditMode();
   scheduleTranspose();
+}
+
+// ── Favorite button (header) ──────────────────────────────────────────────────
+
+async function updateFavBtn() {
+  if (!state.filePath) {
+    els.favBtn.style.display = "none";
+    return;
+  }
+  els.favBtn.style.display = "inline-flex";
+  // Check current favorite status
+  try {
+    const result = await window.pywebview.api.get_favorites();
+    if (result.ok) {
+      const isFav = result.favorites.some(f => f.path === state.filePath);
+      _setFavBtnState(isFav);
+    }
+  } catch (_) {}
+}
+
+function _setFavBtnState(isFav) {
+  els.favBtn.textContent = isFav ? "⭐ Favorited" : "☆ Favorite";
+  els.favBtn.title       = isFav ? "Remove from favorites" : "Add to favorites";
+  els.favBtn.classList.toggle("btn--fav-active", isFav);
+}
+
+async function toggleCurrentFileFavorite() {
+  if (!state.filePath) return;
+  try {
+    const result = await window.pywebview.api.toggle_favorite(state.filePath);
+    if (!result.ok) { showToast("error", result.error || "Failed."); return; }
+    _setFavBtnState(result.is_favorite);
+    // Sync explorer + favorites panel
+    state.explorerEntries = state.explorerEntries.map(e =>
+      e.path === state.filePath ? { ...e, is_favorite: result.is_favorite } : e
+    );
+    renderExplorer();
+    renderFavorites(result.favorites);
+    showToast(
+      result.is_favorite ? "success" : "info",
+      result.is_favorite ? "Added to favorites" : "Removed from favorites",
+    );
+  } catch (err) {
+    showToast("error", "Favorites error."); console.error(err);
+  }
 }
 
 // ── Dirty state ───────────────────────────────────────────────────────────────
@@ -376,6 +447,7 @@ function bindHeaderButtons() {
     state.isDirty   = false;
     els.inputText.value = "";
     updateDirtyIndicator();
+    els.favBtn.style.display = "none";
     exitEditMode();
     renderEmpty();
   });
@@ -386,6 +458,7 @@ function bindHeaderButtons() {
 
   els.copyBtn.addEventListener("click",   copyOutput);
   els.exportBtn.addEventListener("click", exportMarkdown);
+  els.favBtn.addEventListener("click",    toggleCurrentFileFavorite);
 }
 
 // ── Edit bar ──────────────────────────────────────────────────────────────────
@@ -846,6 +919,7 @@ function applyChordColor(color) {
   const g = parseInt(color.slice(3, 5), 16);
   const b = parseInt(color.slice(5, 7), 16);
   document.documentElement.style.setProperty("--chord-bg", `rgba(${r},${g},${b},0.13)`);
+  persistAppearance();
 }
 
 // ── Font selector ─────────────────────────────────────────────────────────────
@@ -853,6 +927,7 @@ function applyChordColor(color) {
 function bindFontSelector() {
   els.fontSelect.addEventListener("change", () => {
     els.outputContent.style.fontFamily = els.fontSelect.value;
+    persistAppearance();
   });
 }
 
@@ -872,6 +947,17 @@ function setZoom(pct) {
     "--output-size", (14 * state.zoom / 100).toFixed(1) + "px"
   );
   els.zoomValue.textContent = `${state.zoom}%`;
+  persistAppearance();
+}
+
+function persistAppearance() {
+  try {
+    window.pywebview.api.save_ui_state({
+      chord_color: state.chordColor,
+      zoom:        state.zoom,
+      font:        els.fontSelect.value,
+    });
+  } catch (_) {}
 }
 
 // ── Transposition ─────────────────────────────────────────────────────────────

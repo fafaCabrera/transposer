@@ -291,6 +291,8 @@ html, body {
 
 .btn-hint  { margin-left: auto; opacity: 0.45; font-size: 10px; letter-spacing: .02em; }
 
+.btn--fav-active { color: #f9c74f !important; }
+
 .btn--step {
   background: var(--surface2);
   color: var(--text);

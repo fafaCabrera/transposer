@@ -10,7 +10,10 @@ _CONFIG_DIR = Path.home() / ".localchords"
 _STATE_FILE = _CONFIG_DIR / "ui_state.json"
 
 _DEFAULTS: dict = {
-    "last_folder": "",
+    "last_folder":  "",
+    "chord_color":  "#f9c74f",
+    "zoom":         100,
+    "font":         "'JetBrains Mono', monospace",
 }
 
 
