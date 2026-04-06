@@ -23,7 +23,7 @@ def extract_text(path: str) -> str:
     """
     ext = os.path.splitext(path)[1].lower()
 
-    if ext in (".txt", ".md"):
+    if ext in (".txt", ".md", ".cho", ".chopro", ".url"):
         return _read_txt(path)
     if ext == ".pdf":
         return _read_pdf(path)

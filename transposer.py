@@ -176,7 +176,7 @@ def transpose_text(
                 tokens.append({"type": "text", "value": line[last:start]})
 
             transposed = transpose_chord(m, semitones, use_flats, notation)
-            tokens.append({"type": "chord", "value": transposed, "original": m.group(0)})
+            tokens.append({"type": "chord", "value": transposed, "original": m.group(0), "col": start})
             last = end
 
         # Remaining plain text

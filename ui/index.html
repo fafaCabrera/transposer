@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Chord Transposer</title>
+  <title>LocalChords</title>
   <link rel="stylesheet" href="styles.css" />
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;700&family=Fira+Code:wght@400;700&display=swap');
@@ -16,11 +16,11 @@
   <!-- ═══════════════════════════════ HEADER ═══════════════════════════════ -->
   <header class="header">
     <span class="header__logo">🎸</span>
-    <span class="header__title">Chord Transposer</span>
+    <span class="header__title">LocalChords</span>
     <span id="headerFilename" class="header__filename"></span>
     <span class="header__spacer"></span>
     <button class="btn btn--ghost btn--sm" id="clearBtn"  title="Clear all">✕ Clear</button>
-    <button class="btn btn--ghost btn--sm" id="editBtn"   title="Edit output" style="display:none">✏ Edit</button>
+    <button class="btn btn--ghost btn--sm" id="editBtn"   title="Edit source" style="display:none">✏ Edit</button>
     <button class="btn btn--ghost btn--sm" id="exportBtn" title="Export as Markdown">⬇ Export .md</button>
     <button class="btn btn--ghost btn--sm" id="copyBtn"   title="Copy output (Ctrl+Shift+C)">📋 Copy</button>
   </header>
@@ -28,32 +28,69 @@
   <!-- ══════════════════════════════ SIDEBAR ═══════════════════════════════ -->
   <aside class="sidebar">
 
-    <!-- ── File import ───────────────────────────────────────────────────── -->
-    <div class="panel">
-      <div class="panel__header">
+    <!-- ── File Explorer ──────────────────────────────────────────────────── -->
+    <div class="panel collapsed" data-panel-id="explorer">
+      <div class="panel__header" draggable="true">
+        <span class="drag-handle" title="Drag to reorder">⠿</span>
+        <span class="panel__icon">📁</span>
+        <span>File Explorer</span>
+        <span class="panel__arrow">▼</span>
+      </div>
+      <div class="panel__body">
+        <button class="btn btn--ghost btn--full" id="openFolderBtn">🗂 Open Folder</button>
+        <div class="explorer-path-row">
+          <span id="explorerPath" class="explorer-path" title="">No folder selected</span>
+        </div>
+        <div class="explorer-sort-row">
+          <span class="field__label">Sort:</span>
+          <button class="sort-btn active" id="sortByName">Name</button>
+          <button class="sort-btn"        id="sortByDate">Date</button>
+        </div>
+        <div class="explorer-list" id="explorerList">
+          <span class="explorer-empty">Open a folder to browse files</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Favorites ──────────────────────────────────────────────────────── -->
+    <div class="panel collapsed" data-panel-id="favorites">
+      <div class="panel__header" draggable="true">
+        <span class="drag-handle" title="Drag to reorder">⠿</span>
+        <span class="panel__icon">⭐</span>
+        <span>Favorites</span>
+        <span class="panel__arrow">▼</span>
+      </div>
+      <div class="panel__body">
+        <div class="explorer-list" id="favoritesList">
+          <span class="explorer-empty">No favorites yet — ☆ a file to add it</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── File import ──────────────────────────────────────────────────────── -->
+    <div class="panel" data-panel-id="import">
+      <div class="panel__header" draggable="true">
+        <span class="drag-handle" title="Drag to reorder">⠿</span>
         <span class="panel__icon">📂</span>
         <span>Import</span>
         <span class="panel__arrow">▼</span>
       </div>
       <div class="panel__body">
 
-        <!-- Drag & drop zone -->
         <div class="drop-zone" id="dropZone" tabindex="0"
              role="button" aria-label="Drop a file or click to browse">
           <span class="drop-zone__icon">📄</span>
           <span class="drop-zone__text">Drop file or click to browse</span>
-          <span class="drop-zone__hint">.txt · .pdf · .docx · .rtf · .lnk</span>
+          <span class="drop-zone__hint">.txt · .pdf · .docx · .rtf · .cho · .url · .lnk</span>
         </div>
         <input type="file" id="fileInput"
-               accept=".txt,.pdf,.docx,.rtf,.lnk"
+               accept=".txt,.pdf,.docx,.rtf,.cho,.chopro,.url,.lnk"
                style="display:none" aria-hidden="true" />
 
-        <!-- Native dialog button -->
         <button class="btn btn--ghost btn--full" id="openFileBtn">
           🗂 Open file dialog &nbsp;<kbd>Ctrl+O</kbd>
         </button>
 
-        <!-- URL fetch -->
         <div class="field">
           <label class="field__label" for="urlInput">Fetch from URL</label>
           <div class="url-row">
@@ -66,9 +103,10 @@
       </div>
     </div>
 
-    <!-- ── Paste text ────────────────────────────────────────────────────── -->
-    <div class="panel collapsed" id="pastePanel">
-      <div class="panel__header">
+    <!-- ── Paste text ──────────────────────────────────────────────────────── -->
+    <div class="panel collapsed" data-panel-id="paste" id="pastePanel">
+      <div class="panel__header" draggable="true">
+        <span class="drag-handle" title="Drag to reorder">⠿</span>
         <span class="panel__icon">📝</span>
         <span>Paste text</span>
         <span class="panel__arrow">▼</span>
@@ -89,9 +127,10 @@
       </div>
     </div>
 
-    <!-- ── Transposition ─────────────────────────────────────────────────── -->
-    <div class="panel">
-      <div class="panel__header">
+    <!-- ── Transposition ────────────────────────────────────────────────────── -->
+    <div class="panel" data-panel-id="transpose">
+      <div class="panel__header" draggable="true">
+        <span class="drag-handle" title="Drag to reorder">⠿</span>
         <span class="panel__icon">🎼</span>
         <span>Transpose</span>
         <span class="panel__arrow">▼</span>
@@ -117,9 +156,10 @@
       </div>
     </div>
 
-    <!-- ── Notation ───────────────────────────────────────────────────────── -->
-    <div class="panel">
-      <div class="panel__header">
+    <!-- ── Notation ─────────────────────────────────────────────────────────── -->
+    <div class="panel" data-panel-id="notation">
+      <div class="panel__header" draggable="true">
+        <span class="drag-handle" title="Drag to reorder">⠿</span>
         <span class="panel__icon">🎵</span>
         <span>Notation</span>
         <span class="panel__arrow">▼</span>
@@ -145,9 +185,10 @@
       </div>
     </div>
 
-    <!-- ── Appearance ─────────────────────────────────────────────────────── -->
-    <div class="panel">
-      <div class="panel__header">
+    <!-- ── Appearance ────────────────────────────────────────────────────────── -->
+    <div class="panel" data-panel-id="appearance">
+      <div class="panel__header" draggable="true">
+        <span class="drag-handle" title="Drag to reorder">⠿</span>
         <span class="panel__icon">🎨</span>
         <span>Appearance</span>
         <span class="panel__arrow">▼</span>
@@ -194,9 +235,31 @@
       </div>
     </div>
 
+    <!-- ── Export ────────────────────────────────────────────────────────────── -->
+    <div class="panel collapsed" data-panel-id="export">
+      <div class="panel__header" draggable="true">
+        <span class="drag-handle" title="Drag to reorder">⠿</span>
+        <span class="panel__icon">⬇</span>
+        <span>Export</span>
+        <span class="panel__arrow">▼</span>
+      </div>
+      <div class="panel__body">
+        <button class="btn btn--ghost btn--full" id="exportMdBtn">
+          📄 Markdown <span class="btn-hint">.md</span>
+        </button>
+        <button class="btn btn--ghost btn--full" id="exportChoBtn">
+          🎼 ChordPro <span class="btn-hint">.cho</span>
+        </button>
+        <button class="btn btn--ghost btn--full" id="exportPdfBtn">
+          🖨 PDF <span class="btn-hint">.pdf</span>
+        </button>
+      </div>
+    </div>
+
     <!-- ── Chord reference ────────────────────────────────────────────────── -->
-    <div class="panel collapsed">
-      <div class="panel__header">
+    <div class="panel collapsed" data-panel-id="chordref">
+      <div class="panel__header" draggable="true">
+        <span class="drag-handle" title="Drag to reorder">⠿</span>
         <span class="panel__icon">ℹ️</span>
         <span>Chord Reference</span>
         <span class="panel__arrow">▼</span>
@@ -219,11 +282,12 @@
   <!-- ════════════════════════════════ MAIN ════════════════════════════════ -->
   <main class="main">
 
-    <!-- Edit mode toolbar (hidden until editing) -->
+    <!-- Edit mode toolbar -->
     <div class="edit-bar" id="editBar" style="display:none">
-      <span class="edit-bar__label">✏ Edit mode</span>
-      <span class="edit-bar__hint">Changes are not transposed — editing the raw text</span>
+      <span class="edit-bar__label">✏ Edit source</span>
+      <span class="edit-bar__hint">Editing source — slider transposes from this text</span>
       <div class="edit-bar__actions">
+        <button class="btn btn--ghost btn--sm"   id="applyEditBtn">✓ Apply</button>
         <button class="btn btn--primary btn--sm" id="saveEditBtn">💾 Save</button>
         <button class="btn btn--ghost btn--sm"   id="cancelEditBtn">✕ Cancel</button>
       </div>
@@ -247,14 +311,14 @@
       <textarea class="edit-textarea" id="editTextarea"
                 style="display:none"
                 spellcheck="false" autocorrect="off" autocapitalize="off"
-                aria-label="Edit output"></textarea>
+                aria-label="Edit source text"></textarea>
 
     </div>
   </main>
 
 </div><!-- /.app -->
 
-<!-- Loading overlay for slow operations (OCR, URL fetch) -->
+<!-- Loading overlay -->
 <div class="loading-overlay" id="loadingOverlay" style="display:none">
   <div class="loading-box">
     <div class="spinner"></div>

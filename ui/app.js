@@ -1,17 +1,5 @@
 /**
- * app.js — Chord Transposer UI logic
- *
- * Features:
- *  - CLI file pre-load (get_startup_file on init)
- *  - File open dialog + drag-drop + sidebar paste
- *  - URL fetch with loading overlay
- *  - Semitone slider with ±1 step buttons
- *  - Notation & accidental toggles
- *  - Chord colour picker + preset swatches
- *  - Font selector + zoom controls
- *  - Real-time transposition (debounced 120ms)
- *  - Markdown export via save dialog
- *  - Copy to clipboard
+ * app.js — LocalChords UI logic
  */
 
 "use strict";
@@ -19,19 +7,23 @@
 // ── Application state ─────────────────────────────────────────────────────────
 
 const state = {
-  rawText:      "",           // current source text
-  songName:     "",           // filename without extension (for export)
-  filePath:     "",           // full path of currently loaded file (if known)
-  fileExt:      "",           // extension of loaded file e.g. ".md"
-  semitones:    0,            // transposition -11…+11
-  notation:     "american",   // "american" | "latin"
-  accidental:   "sharp",      // "sharp" | "flat"
-  chordColor:   "#f9c74f",    // chord highlight CSS colour
-  zoom:         100,          // output font-size %
-  lastLines:    [],           // most recent tokenised lines from Python
-  isEditing:    false,        // edit mode active?
-  debounceTimer: null,
-  initDone:     false,
+  rawText:         "",          // current source text (always the editable base)
+  songName:        "",          // filename without extension
+  filePath:        "",          // full path of loaded file (if known)
+  fileExt:         "",          // extension e.g. ".md"
+  semitones:       0,
+  notation:        "american",
+  accidental:      "sharp",
+  chordColor:      "#f9c74f",
+  zoom:            100,
+  lastLines:       [],          // most recent tokenised lines from Python
+  isEditing:       false,
+  isDirty:         false,       // unsaved edits
+  debounceTimer:   null,
+  initDone:        false,
+  explorerPath:    "",
+  explorerSort:    "name",
+  explorerEntries: [],
 };
 
 // ── DOM helpers ───────────────────────────────────────────────────────────────
@@ -79,11 +71,17 @@ const els = {
   zoomReset:        $("zoomReset"),
   zoomValue:        $("zoomValue"),
 
+  // Export panel
+  exportMdBtn:      $("exportMdBtn"),
+  exportChoBtn:     $("exportChoBtn"),
+  exportPdfBtn:     $("exportPdfBtn"),
+
   // Output
   outputContent:    $("outputContent"),
   outputPlaceholder: $("outputPlaceholder"),
   editBar:          $("editBar"),
   editTextarea:     $("editTextarea"),
+  applyEditBtn:     $("applyEditBtn"),
   saveEditBtn:      $("saveEditBtn"),
   cancelEditBtn:    $("cancelEditBtn"),
 
@@ -120,16 +118,21 @@ async function init() {
   bindFontSelector();
   bindZoomControls();
   bindHeaderButtons();
+  bindExportPanel();
+  bindEditBar();
+  bindFileExplorer();
+  bindFavorites();
+  initSidebarDragDrop();
   bindKeyboard();
 
   applyChordColor(state.chordColor);
   updateSliderLabel();
 
-  // Load file passed as CLI argument
+  // Load file/URL passed as CLI argument
   try {
     const result = await window.pywebview.api.get_startup_file();
     if (result && result.ok) {
-      loadText(result.text, result.filename || "");
+      loadText(result.text, result.filename || "", result.path || "", result.ext || "", result.meta);
       showToast("success", `Loaded: ${result.filename || "file"}`);
     }
   } catch (_) { /* no CLI arg — normal */ }
@@ -139,10 +142,80 @@ async function init() {
 
 function bindPanelHeaders() {
   document.querySelectorAll(".panel__header").forEach(header => {
-    header.addEventListener("click", () => {
+    header.addEventListener("click", e => {
+      // Don't toggle collapse when clicking the drag handle
+      if (e.target.closest(".drag-handle")) return;
       header.closest(".panel").classList.toggle("collapsed");
     });
   });
+}
+
+// ── Sidebar drag-and-drop reorder ────────────────────────────────────────────
+
+function initSidebarDragDrop() {
+  const sidebar = document.querySelector(".sidebar");
+  let dragPanel = null;
+
+  sidebar.addEventListener("dragstart", e => {
+    const panel = e.target.closest(".panel");
+    if (!panel) return;
+    dragPanel = panel;
+    panel.classList.add("dragging");
+    e.dataTransfer.effectAllowed = "move";
+  });
+
+  sidebar.addEventListener("dragend", () => {
+    if (dragPanel) {
+      dragPanel.classList.remove("dragging");
+      dragPanel = null;
+    }
+    sidebar.querySelectorAll(".panel.drag-over")
+      .forEach(p => p.classList.remove("drag-over"));
+    saveSidebarOrder();
+  });
+
+  sidebar.addEventListener("dragover", e => {
+    e.preventDefault();
+    if (!dragPanel) return;
+    const target = e.target.closest(".panel");
+    if (!target || target === dragPanel) return;
+    sidebar.querySelectorAll(".panel.drag-over")
+      .forEach(p => p.classList.remove("drag-over"));
+    target.classList.add("drag-over");
+    const rect = target.getBoundingClientRect();
+    if (e.clientY < rect.top + rect.height / 2) {
+      sidebar.insertBefore(dragPanel, target);
+    } else {
+      sidebar.insertBefore(dragPanel, target.nextSibling);
+    }
+  });
+
+  sidebar.addEventListener("dragleave", e => {
+    const target = e.target.closest(".panel");
+    if (target) target.classList.remove("drag-over");
+  });
+
+  sidebar.addEventListener("drop", e => e.preventDefault());
+
+  loadSidebarOrder();
+}
+
+function saveSidebarOrder() {
+  const order = [...document.querySelectorAll(".sidebar .panel")]
+    .map(p => p.dataset.panelId).filter(Boolean);
+  try { localStorage.setItem("lc_sidebar_order", JSON.stringify(order)); } catch (_) {}
+}
+
+function loadSidebarOrder() {
+  try {
+    const saved = JSON.parse(localStorage.getItem("lc_sidebar_order") || "[]");
+    if (!saved.length) return;
+    const sidebar = document.querySelector(".sidebar");
+    for (const id of saved) {
+      const panel = sidebar.querySelector(`[data-panel-id="${id}"]`);
+      if (panel) sidebar.appendChild(panel);
+    }
+  } catch (_) {}
 }
 
 // ── File import controls ──────────────────────────────────────────────────────
@@ -184,14 +257,13 @@ async function openNativeFile() {
 }
 
 async function readFileObject(file) {
-  const allowed = [".txt", ".pdf", ".docx", ".rtf", ".lnk"];
+  const allowed = [".txt", ".md", ".pdf", ".docx", ".rtf", ".cho", ".chopro", ".url", ".lnk"];
   const ext = "." + file.name.split(".").pop().toLowerCase();
   if (!allowed.includes(ext)) {
     showToast("error", `Unsupported type: ${ext}`);
     return;
   }
 
-  // PDFs may trigger OCR — show loading overlay
   if (ext === ".pdf") showLoading("Extracting PDF…");
   else                showLoading(`Loading ${file.name}…`);
 
@@ -212,12 +284,9 @@ function handleFileResult(result, nameHint) {
     showToast("error", result?.error || "Unknown error.");
     return;
   }
-  loadText(
-    result.text,
-    nameHint || result.filename || "",
-    result.path  || "",
-    result.ext   || "",
-  );
+  const meta = result.meta || null;
+  const name = (meta && meta.title) || nameHint || result.filename || "";
+  loadText(result.text, name, result.path || "", result.ext || "", meta);
   showToast("success", "File loaded.");
 }
 
@@ -237,9 +306,7 @@ function bindUrlFetch() {
     const url = els.urlInput.value.trim();
     if (url) fetchFromUrl(url);
   };
-
   els.urlFetchBtn.addEventListener("click", doFetch);
-
   els.urlInput.addEventListener("keydown", e => {
     if (e.key === "Enter") { e.preventDefault(); doFetch(); }
   });
@@ -253,7 +320,6 @@ async function fetchFromUrl(url) {
       showToast("error", result?.error || "Failed to fetch URL.");
       return;
     }
-    // Derive a name from the URL hostname
     let name = "";
     try { name = new URL(url.startsWith("http") ? url : "https://" + url).hostname; }
     catch (_) { name = "url"; }
@@ -279,28 +345,37 @@ function bindPastePanel() {
 
 // ── Load text → state ─────────────────────────────────────────────────────────
 
-function loadText(text, name, path, ext) {
-  state.rawText             = text;
-  state.songName            = name || "";
-  state.filePath            = path || "";
-  state.fileExt             = ext  || "";
-  els.inputText.value       = text;
-  els.headerFilename.textContent = name || "";
+function loadText(text, name, path, ext, meta) {
+  state.rawText  = text;
+  state.songName = (meta && meta.title) || name || "";
+  state.filePath = path || "";
+  state.fileExt  = ext  || "";
+  state.isDirty  = false;
+  els.inputText.value = text;
+  updateDirtyIndicator();
   exitEditMode();
   scheduleTranspose();
+}
+
+// ── Dirty state ───────────────────────────────────────────────────────────────
+
+function updateDirtyIndicator() {
+  const name = state.songName || "";
+  els.headerFilename.textContent = name + (state.isDirty ? " •" : "");
 }
 
 // ── Header buttons ────────────────────────────────────────────────────────────
 
 function bindHeaderButtons() {
   els.clearBtn.addEventListener("click", () => {
-    state.rawText  = "";
-    state.songName = "";
-    state.filePath = "";
-    state.fileExt  = "";
+    state.rawText   = "";
+    state.songName  = "";
+    state.filePath  = "";
+    state.fileExt   = "";
     state.lastLines = [];
+    state.isDirty   = false;
     els.inputText.value = "";
-    els.headerFilename.textContent = "";
+    updateDirtyIndicator();
     exitEditMode();
     renderEmpty();
   });
@@ -309,36 +384,42 @@ function bindHeaderButtons() {
     state.isEditing ? exitEditMode() : enterEditMode();
   });
 
+  els.copyBtn.addEventListener("click",   copyOutput);
+  els.exportBtn.addEventListener("click", exportMarkdown);
+}
+
+// ── Edit bar ──────────────────────────────────────────────────────────────────
+
+function bindEditBar() {
+  els.applyEditBtn.addEventListener("click",  applyEdit);
   els.saveEditBtn.addEventListener("click",   saveEdit);
   els.cancelEditBtn.addEventListener("click", exitEditMode);
 
-  els.copyBtn.addEventListener("click", copyOutput);
-  els.exportBtn.addEventListener("click", exportMarkdown);
+  // Track edits → dirty state
+  els.editTextarea.addEventListener("input", () => {
+    if (state.isEditing) {
+      state.isDirty = true;
+      updateDirtyIndicator();
+    }
+  });
 }
 
 // ── Edit mode ─────────────────────────────────────────────────────────────────
 
 function enterEditMode() {
-  if (!state.lastLines.length && !state.rawText.trim()) {
-    showToast("error", "Nothing to edit."); return;
-  }
+  if (!state.rawText.trim()) { showToast("error", "Nothing to edit."); return; }
   state.isEditing = true;
 
-  // Populate textarea with current plain text output
-  const plain = els.outputContent.textContent || state.rawText;
-  els.editTextarea.value = plain;
+  // Show the RAW source text (not the transposed output)
+  els.editTextarea.value = state.rawText;
 
-  // Swap views
   els.outputContent.style.display  = "none";
   els.editTextarea.style.display   = "block";
   els.editBar.style.display        = "flex";
   $("outputScroll").classList.add("editing");
 
-  // Update edit button label
   els.editBtn.textContent = "👁 View";
   els.editBtn.title       = "Switch back to view mode";
-
-  // Update save button label based on whether we know the file path
   els.saveEditBtn.textContent = state.filePath ? "💾 Save" : "💾 Save As…";
 
   els.editTextarea.focus();
@@ -354,7 +435,20 @@ function exitEditMode() {
   $("outputScroll").classList.remove("editing");
 
   els.editBtn.textContent = "✏ Edit";
-  els.editBtn.title       = "Edit output";
+  els.editBtn.title       = "Edit source";
+}
+
+async function applyEdit() {
+  const content = els.editTextarea.value;
+  if (!content.trim()) { showToast("error", "Nothing to apply."); return; }
+
+  // Persist edited text as the new source
+  state.rawText = content;
+  state.isDirty = false;
+  updateDirtyIndicator();
+  exitEditMode();
+  scheduleTranspose();
+  showToast("success", "Applied — re-transposing from edited text.");
 }
 
 async function saveEdit() {
@@ -364,35 +458,37 @@ async function saveEdit() {
   showLoading("Saving…");
   try {
     let result;
-
     if (state.filePath) {
-      // Overwrite the known file directly
       result = await window.pywebview.api.save_file(state.filePath, content);
       if (result.ok) {
+        state.rawText = content;
+        state.isDirty = false;
+        updateDirtyIndicator();
         showToast("success", `Saved: ${state.filePath.split(/[/\\]/).pop()}`);
         exitEditMode();
+        scheduleTranspose();
       } else {
         showToast("error", result.error || "Save failed.");
       }
     } else {
-      // No known path — open Save As dialog
       const suggested = state.songName ? `${state.songName}.md` : "song.md";
       result = await window.pywebview.api.save_file_dialog(content, suggested);
-      if (!result.ok) {
-        showToast("error", result.error || "Save failed."); return;
-      }
+      if (!result.ok) { showToast("error", result.error || "Save failed."); return; }
       if (result.saved) {
+        state.rawText  = content;
         state.filePath = result.path;
         state.fileExt  = ".md";
+        state.isDirty  = false;
+        updateDirtyIndicator();
         showToast("success", `Saved: ${result.path.split(/[/\\]/).pop()}`);
         exitEditMode();
+        scheduleTranspose();
       } else {
         showToast("info", "Save cancelled.");
       }
     }
   } catch (err) {
-    showToast("error", "Save error.");
-    console.error(err);
+    showToast("error", "Save error."); console.error(err);
   } finally {
     hideLoading();
   }
@@ -401,12 +497,12 @@ async function saveEdit() {
 function copyOutput() {
   const text = els.outputContent.textContent || "";
   if (!text.trim()) { showToast("error", "Nothing to copy."); return; }
-
-  const write = txt => {
+  const write = txt =>
     navigator.clipboard
-      ? navigator.clipboard.writeText(txt).then(() => showToast("success", "Copied!")).catch(() => fallbackCopy(txt))
+      ? navigator.clipboard.writeText(txt)
+          .then(() => showToast("success", "Copied!"))
+          .catch(() => fallbackCopy(txt))
       : fallbackCopy(txt);
-  };
   write(text);
 }
 
@@ -421,38 +517,238 @@ function fallbackCopy(text) {
   showToast("success", "Copied!");
 }
 
-// ── Markdown export ───────────────────────────────────────────────────────────
+// ── File Explorer ─────────────────────────────────────────────────────────────
 
-async function exportMarkdown() {
-  if (!state.rawText.trim()) { showToast("error", "Nothing to export."); return; }
-  if (!state.lastLines.length) { showToast("error", "Transpose first."); return; }
+function bindFileExplorer() {
+  $("openFolderBtn").addEventListener("click", openExplorerFolder);
+  $("sortByName").addEventListener("click", () => setExplorerSort("name"));
+  $("sortByDate").addEventListener("click", () => setExplorerSort("date"));
 
-  showLoading("Preparing export…");
+  // Restore last folder from persisted state
+  window.pywebview.api.get_ui_state().then(st => {
+    if (st && st.last_folder) {
+      state.explorerPath = st.last_folder;
+      refreshExplorer();
+    }
+  }).catch(() => {});
+}
+
+async function openExplorerFolder() {
+  showLoading("Opening folder…");
   try {
-    const result = await window.pywebview.api.export_markdown(
-      state.rawText,
-      state.lastLines,
-      state.songName || "song",
-      state.semitones,
-      state.accidental === "flat",
-      state.notation,
-    );
-
+    const result = await window.pywebview.api.open_folder_dialog();
     if (!result.ok) {
-      showToast("error", result.error || "Export failed.");
+      showToast("error", result.error || "No folder selected.");
       return;
     }
-    if (result.saved) {
-      showToast("success", `Saved: ${result.path.split(/[/\\]/).pop()}`);
-    } else {
-      showToast("info", "Export cancelled.");
-    }
+    state.explorerPath    = result.path;
+    state.explorerEntries = result.entries || [];
+    renderExplorer();
   } catch (err) {
-    showToast("error", "Export error.");
-    console.error(err);
+    showToast("error", "Could not open folder."); console.error(err);
   } finally {
     hideLoading();
   }
+}
+
+async function refreshExplorer() {
+  if (!state.explorerPath) return;
+  try {
+    const result = await window.pywebview.api.browse_folder(state.explorerPath);
+    if (result.ok) {
+      state.explorerEntries = result.entries || [];
+      renderExplorer();
+    }
+  } catch (_) {}
+}
+
+function setExplorerSort(mode) {
+  state.explorerSort = mode;
+  $("sortByName").classList.toggle("active", mode === "name");
+  $("sortByDate").classList.toggle("active", mode === "date");
+  renderExplorer();
+}
+
+function renderExplorer() {
+  const list   = $("explorerList");
+  const pathEl = $("explorerPath");
+
+  pathEl.textContent = state.explorerPath
+    ? (state.explorerPath.split(/[/\\]/).pop() || state.explorerPath)
+    : "No folder selected";
+  pathEl.title = state.explorerPath;
+
+  let entries = [...state.explorerEntries];
+  if (state.explorerSort === "date") {
+    entries.sort((a, b) => b.modified - a.modified);
+  } else {
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  if (!entries.length) {
+    list.innerHTML = '<span class="explorer-empty">No supported files in this folder</span>';
+    return;
+  }
+
+  list.innerHTML = "";
+  for (const entry of entries) {
+    list.appendChild(makeFileEntry(entry));
+  }
+}
+
+function makeFileEntry(entry) {
+  const div = document.createElement("div");
+  div.className = "file-entry";
+
+  const icon = document.createElement("span");
+  icon.className   = "file-entry__icon";
+  icon.textContent = extIcon(entry.ext);
+
+  const name = document.createElement("span");
+  name.className   = "file-entry__name";
+  name.textContent = entry.name;
+  name.title       = entry.path;
+  name.addEventListener("click", () => openFileFromExplorer(entry));
+
+  const favBtn = document.createElement("button");
+  favBtn.className   = "fav-btn" + (entry.is_favorite ? " active" : "");
+  favBtn.textContent = entry.is_favorite ? "⭐" : "☆";
+  favBtn.title       = entry.is_favorite ? "Remove from favorites" : "Add to favorites";
+  favBtn.addEventListener("click", e => {
+    e.stopPropagation();
+    toggleFavorite(entry.path);
+  });
+
+  div.appendChild(icon);
+  div.appendChild(name);
+  div.appendChild(favBtn);
+  return div;
+}
+
+function extIcon(ext) {
+  const map = {
+    '.pdf':    '📕', '.docx':   '📘', '.txt':    '📄',
+    '.md':     '📝', '.cho':    '🎵', '.chopro': '🎵',
+    '.url':    '🌐', '.lnk':   '🔗', '.rtf':    '📄',
+  };
+  return map[ext] || '📄';
+}
+
+async function openFileFromExplorer(entry) {
+  showLoading(`Loading ${entry.name}…`);
+  try {
+    const result = await window.pywebview.api.open_file_by_path(entry.path);
+    handleFileResult(result, entry.stem);
+  } catch (err) {
+    showToast("error", "Could not open file."); console.error(err);
+  } finally {
+    hideLoading();
+  }
+}
+
+// ── Favorites ─────────────────────────────────────────────────────────────────
+
+function bindFavorites() {
+  refreshFavorites();
+}
+
+async function refreshFavorites() {
+  try {
+    const result = await window.pywebview.api.get_favorites();
+    if (result.ok) renderFavorites(result.favorites);
+  } catch (_) {}
+}
+
+function renderFavorites(favs) {
+  const list = $("favoritesList");
+  if (!favs || !favs.length) {
+    list.innerHTML = '<span class="explorer-empty">No favorites yet — ☆ a file to add it</span>';
+    return;
+  }
+  list.innerHTML = "";
+  for (const fav of favs) {
+    list.appendChild(makeFileEntry({ ...fav, is_favorite: true }));
+  }
+}
+
+async function toggleFavorite(path) {
+  try {
+    const result = await window.pywebview.api.toggle_favorite(path);
+    if (!result.ok) { showToast("error", result.error || "Failed."); return; }
+    // Sync explorer entries
+    state.explorerEntries = state.explorerEntries.map(e =>
+      e.path === path ? { ...e, is_favorite: result.is_favorite } : e
+    );
+    renderExplorer();
+    renderFavorites(result.favorites);
+    showToast(
+      result.is_favorite ? "success" : "info",
+      result.is_favorite ? "Added to favorites" : "Removed from favorites",
+    );
+  } catch (err) {
+    showToast("error", "Favorites error."); console.error(err);
+  }
+}
+
+// ── Export functions ──────────────────────────────────────────────────────────
+
+function bindExportPanel() {
+  els.exportMdBtn.addEventListener("click",  exportMarkdown);
+  els.exportChoBtn.addEventListener("click", exportChordPro);
+  els.exportPdfBtn.addEventListener("click", exportPDF);
+}
+
+function _exportArgs() {
+  return [
+    state.rawText,
+    state.lastLines,
+    state.songName || "song",
+    state.semitones,
+    state.accidental === "flat",
+    state.notation,
+  ];
+}
+
+async function exportMarkdown() {
+  if (!state.rawText.trim())   { showToast("error", "Nothing to export."); return; }
+  if (!state.lastLines.length) { showToast("error", "Transpose first.");   return; }
+  showLoading("Preparing Markdown…");
+  try {
+    const result = await window.pywebview.api.export_markdown(..._exportArgs());
+    _handleExportResult(result);
+  } catch (err) {
+    showToast("error", "Export error."); console.error(err);
+  } finally { hideLoading(); }
+}
+
+async function exportChordPro() {
+  if (!state.rawText.trim())   { showToast("error", "Nothing to export."); return; }
+  if (!state.lastLines.length) { showToast("error", "Transpose first.");   return; }
+  showLoading("Preparing ChordPro…");
+  try {
+    const result = await window.pywebview.api.export_chordpro(..._exportArgs());
+    _handleExportResult(result);
+  } catch (err) {
+    showToast("error", "Export error."); console.error(err);
+  } finally { hideLoading(); }
+}
+
+async function exportPDF() {
+  if (!state.rawText.trim())   { showToast("error", "Nothing to export."); return; }
+  if (!state.lastLines.length) { showToast("error", "Transpose first.");   return; }
+  showLoading("Generating PDF…");
+  try {
+    const result = await window.pywebview.api.export_pdf(..._exportArgs(), state.chordColor);
+    _handleExportResult(result);
+  } catch (err) {
+    showToast("error", "Export error."); console.error(err);
+  } finally { hideLoading(); }
+}
+
+function _handleExportResult(result) {
+  if (!result.ok) { showToast("error", result.error || "Export failed."); return; }
+  if (result.saved) showToast("success", `Saved: ${result.path.split(/[/\\]/).pop()}`);
+  else              showToast("info", "Export cancelled.");
 }
 
 // ── Slider ────────────────────────────────────────────────────────────────────
@@ -650,21 +946,20 @@ function renderOutput(lines) {
     els.outputContent.style.fontFamily = els.fontSelect.value;
   }
 
-  // Show Edit button now that there's output
   els.editBtn.style.display = "inline-flex";
 }
 
 function renderEmpty() {
-  els.outputContent.style.display      = "none";
-  els.outputPlaceholder.style.display  = "flex";
-  els.editBtn.style.display            = "none";
+  els.outputContent.style.display     = "none";
+  els.outputPlaceholder.style.display = "flex";
+  els.editBtn.style.display           = "none";
   state.lastLines = [];
 }
 
 // ── Loading overlay ───────────────────────────────────────────────────────────
 
 function showLoading(msg) {
-  els.loadingMsg.textContent    = msg || "Loading…";
+  els.loadingMsg.textContent       = msg || "Loading…";
   els.loadingOverlay.style.display = "flex";
 }
 

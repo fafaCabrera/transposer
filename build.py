@@ -58,7 +58,7 @@ def main():
     # ── Assemble command ─────────────────────────────────────────────────────
     cmd = [
         sys.executable, "-m", "PyInstaller",
-        "--name=ChordTransposer",
+        "--name=LocalChords",
         "--distpath=dist",
         "--workpath=build",
         "--specpath=.",
@@ -75,7 +75,7 @@ def main():
     cmd.append(entry)
 
     print("=" * 60)
-    print(f"Building Chord Transposer for {system}")
+    print(f"Building LocalChords for {system}")
     print(f"Mode   : {'one-file' if onefile else 'one-dir'}")
     print(f"Console: hidden (windowed mode)")
     print("=" * 60)
@@ -89,10 +89,10 @@ def main():
 
     print("\n✅ Build succeeded.")
     if onefile:
-        name = "ChordTransposer.exe" if system == "Windows" else "ChordTransposer"
+        name = "LocalChords.exe" if system == "Windows" else "LocalChords"
         print(f"   Executable : dist/{name}")
     else:
-        print("   Directory  : dist/ChordTransposer/")
+        print("   Directory  : dist/LocalChords/")
     if system == "Darwin":
         print("   App bundle : dist/ChordTransposer.app/")
 
