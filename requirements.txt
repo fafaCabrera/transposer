@@ -1,23 +1,23 @@
-# ── Required ─────────────────────────────────────────────────────────────────
-pywebview>=4.4.1
+# ── Required ──────────────────────────────────────────────────────────────────
+pywebview>=4.4.1          # native OS window (Edge/WebKit/GTK)
 
 # ── Recommended: better PDF text extraction ───────────────────────────────────
-pdfminer.six>=20221105   # most accurate for lyrics/chord sheets
-# pypdf>=3.0.0           # alternative, lighter
+pdfminer.six>=20221105    # most accurate layout-aware text extraction
+# pypdf>=3.0.0            # lighter alternative
 
-# ── Optional: OCR for image-based PDFs ───────────────────────────────────────
+# ── Optional: OCR for image-based / scanned PDFs ─────────────────────────────
 # Also requires the Tesseract binary — see README for install instructions.
 pytesseract>=0.3.10
 Pillow>=10.0.0
-pymupdf>=1.23.0          # renders PDF pages to images (self-contained)
-# pdf2image>=1.16.0      # alternative renderer, needs poppler in PATH
+pymupdf>=1.23.0           # renders PDF pages to images (self-contained)
+# pdf2image>=1.16.0       # alternative renderer, needs poppler in PATH
 
-# ── Optional: URL fetching & HTML parsing ────────────────────────────────────
+# ── Optional: URL fetching & HTML parsing ─────────────────────────────────────
 requests>=2.31.0
 beautifulsoup4>=4.12.0
 
-# ── Optional: PDF export ─────────────────────────────────────────────────────
+# ── Optional: PDF export ──────────────────────────────────────────────────────
 fpdf2>=2.7.0
 
 # ── Optional: Windows .lnk shortcut resolution ───────────────────────────────
-# winshell>=0.6          # only if PowerShell is unavailable
+# winshell>=0.6           # fallback if PowerShell is unavailable
